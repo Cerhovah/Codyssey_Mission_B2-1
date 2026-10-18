@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parent.parent
-CURRENT_PHASE = 1  # 구현이 끝난 마지막 Phase. Phase 를 완료할 때마다 올린다.
+CURRENT_PHASE = 2  # 구현이 끝난 마지막 Phase. Phase 를 완료할 때마다 올린다.
 
 SmokeFn = Callable[[Path], None]
 

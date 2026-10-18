@@ -8,9 +8,9 @@
 | --- | --- |
 | [docs/MISSION_SPEC.md](docs/MISSION_SPEC.md) | 과제 명세 **원문 보존** (수정 금지) |
 | `README.md` (이 문서) | 명세 심층 분석, 사용자 관점 사양(실행·저장·명령·CSV), 진행 현황 |
-| [AGENT.md](AGENT.md) | 개발 헌장, 모호성 결정표 D01~D32, 계층·계약, 9단계 커밋 계획, 검증 정책 |
+| [AGENT.md](AGENT.md) | 개발 헌장, 모호성 결정표 D01~D35, 계층·계약, 9단계 커밋 계획, 검증 정책 |
 
-진행 상태: **Phase 1 (골격과 계약) 완료 — 저장 계층(P2) 구현 전**. 아래 "명령 예시"는 구현 목표 사양이며, Phase 8에서 실제 출력으로 갱신한다.
+진행 상태: **Phase 2 (저장 계층) 완료 — 서비스·명령(P3) 구현 전**. 아래 "명령 예시"는 구현 목표 사양이며, Phase 8에서 실제 출력으로 갱신한다.
 
 ---
 
@@ -69,7 +69,7 @@
 
 ### 1.4 숨은 요구와 모순 — 반드시 결정해야 했던 지점
 
-명세를 읽는 것만으로는 구현이 갈라지는 지점이 11곳 있었다. 명세 주도 개발에서는 이런 지점을 추측하지 않고 **결정표로 고정**한다. 전체 결정은 [AGENT.md 4장](AGENT.md) D01~D32에 있고, 여기서는 왜 그 결정인지 핵심만 적는다.
+명세를 읽는 것만으로는 구현이 갈라지는 지점이 11곳 있었다. 명세 주도 개발에서는 이런 지점을 추측하지 않고 **결정표로 고정**한다. 전체 결정은 [AGENT.md 4장](AGENT.md) D01~D35에 있고, 여기서는 왜 그 결정인지 핵심만 적는다.
 
 1. **"최신순"과 "스트리밍"은 서로 당긴다.** 최신순 정렬은 원칙적으로 전체를 봐야 하지만, 명세는 전체 로드를 금지한다. 해법은 `heapq.nlargest(limit, 제너레이터)`. 파일은 한 줄씩 흐르고 메모리는 limit개만 유지한다. search는 필터를 통과한 부분집합만 정렬한다 (D07).
 2. **옵션 표기가 명세 안에서 흔들린다.** 본문에 `-limit`, `-from`, `-top`, `-data-dir`가 섞여 있지만 4장 1항이 `--` 통일을 명시한다. 마크다운 변환 손실로 판단하고 **롱 옵션만** 제공한다 (D02).
@@ -105,7 +105,7 @@ GitHub Spec Kit의 네 단계(Specify → Plan → Tasks → Implement)는 이 �
 | Spec Kit 단계 | 이 저장소 |
 | --- | --- |
 | Constitution (불변 원칙) | AGENT.md 3장 "헌장" |
-| Specify (무엇을, 왜) | docs/MISSION_SPEC.md + README 1장 분석 + `[NEEDS CLARIFICATION]` 대신 결정표 D01~D32 |
+| Specify (무엇을, 왜) | docs/MISSION_SPEC.md + README 1장 분석 + `[NEEDS CLARIFICATION]` 대신 결정표 D01~D35 |
 | Plan (어떻게) | AGENT.md 5~8장 계층·데이터 계약·CLI 계약·오류 규약 |
 | Tasks (작게 나눠 검증) | AGENT.md 9장 Phase 0~8, 각 1커밋 1푸시 1게이트 |
 | Implement | Phase 순서대로, 게이트 통과 후에만 다음 단계 |
@@ -388,7 +388,7 @@ docs/MISSION_SPEC.md  명세 원문
 | --- | --- | --- | --- |
 | P0 | 문서: 명세 원문, README 분석·사양, AGENT 헌장·계획 | `docs: 명세 분석과 명세 주도 개발 계획 수립` | ✅ 완료 |
 | P1 | 골격과 계약: 패키지, errors, decorators, models 검증, argparse 전 명령 `--help`, 종료 코드 | `feat: CLI 골격과 데이터 모델·오류 계약 구현` | ✅ 완료 |
-| P2 | 저장 계층: JSONL 제너레이터 읽기, append, 원자적 재작성, 3개 Store, 초기화·기본 카테고리 | `feat: JSONL 스트리밍 저장소와 원자적 재작성 구현` | ⬜ |
+| P2 | 저장 계층: JSONL 제너레이터 읽기, append, 원자적 재작성, 3개 Store, 초기화·기본 카테고리 | `feat: JSONL 스트리밍 저장소와 원자적 재작성 구현` | ✅ 완료 |
 | P3 | category add/list, add(대화형), list(heapq) | `feat: 카테고리 관리와 거래 추가·목록 구현` | ⬜ |
 | P4 | search, summary, budget set/list | `feat: 검색·월별 요약·예산 경고 구현` | ⬜ |
 | P5 | update(옵션), delete, category remove(--replace) | `feat: 거래 수정·삭제와 카테고리 재배정 구현` | ⬜ |
@@ -397,4 +397,4 @@ docs/MISSION_SPEC.md  명세 원문
 | P8 | 마무리: README 실제 출력 반영, 전체 회귀, 상태 보고 | `docs: 실행 결과 반영과 최종 검증 기록` | ⬜ |
 | 예비 | 게이트 실패 수정 1회 | `fix: ...` | — |
 
-커밋·푸시 누계: **2 / 10** (P0, P1).
+커밋·푸시 누계: **3 / 10** (P0, P1, P2).
