@@ -4,10 +4,11 @@ P3: CategoryService.list_names/add/require, TransactionService.add/list_recent, 
 P4: TransactionService.search(D28, D38), BudgetService.set_budget/list_all/summary(D16, D17, D25, D39).
 P5: TransactionService.update/delete, CategoryService.remove(D03, D18, D40). 재작성은 명령당 최대 1회.
 P6: TransactionService.import_csv/export_csv(D19, D20, D41). CSV 는 교환 포맷이며 저장 포맷은 JSONL 그대로다.
-P7: Services.backup(D43). 모든 명령이 구현되어 not_implemented 는 더 쓰지 않는다. argparse·print·input 은 여기서 쓰지 않는다.
+P7: Services.backup(D43). P9(예비): RecurringService(D44). argparse·print·input 은 여기서 쓰지 않는다.
 """
 from __future__ import annotations
 
+import calendar
 import csv
 import heapq
 from dataclasses import dataclass, field
@@ -22,24 +23,30 @@ from .models import (
     TYPE_EXPENSE,
     TYPE_INCOME,
     Budget,
+    RecurringRule,
     Transaction,
     format_transaction_id,
     parse_amount,
     parse_category_name,
     parse_date,
+    parse_day,
     parse_memo,
     parse_month,
     parse_tags,
     parse_type,
+    recurring_number,
     transaction_number,
 )
 from .repository import (
     BUDGETS_FILE,
     CATEGORIES_FILE,
+    DATA_FILES,
+    RECURRING_FILE,
     TRANSACTIONS_FILE,
     BudgetStore,
     CategoryStore,
     JsonlStore,
+    RecurringStore,
     TransactionRepository,
     backup_files,
     ensure_initialized,
@@ -71,6 +78,7 @@ class MonthlySummary:
 
 
 BACKUP_DIR_NAME = "backups"  # D43
+DATA_FILE_COUNT = len(DATA_FILES)  # backup 출력 `(N files)` 용. cli 는 repository 를 import 하지 않는다 (C10)
 
 
 def _backup_stamp() -> str:
@@ -427,6 +435,106 @@ class BudgetService:
 
 
 @dataclass(slots=True)
+class ApplyResult:
+    """recurring apply 결과: 규칙 수, 생성 건수, (규칙 id, 사유) skip 목록 (D44)."""
+
+    month: str
+    rule_count: int
+    created: int = 0
+    skipped: list[tuple[str, str]] = field(default_factory=list)
+
+
+RECURRING_TAG_PREFIX = "rc:"  # 생성 거래에 붙여 중복 적용을 막는 태그 (D44)
+
+
+class RecurringService:
+    """반복 내역 규칙 등록·조회·삭제와 월별 적용 (보너스 B2, D44)."""
+
+    def __init__(self, recurring: RecurringStore, transactions: TransactionRepository, categories: CategoryStore) -> None:
+        self.recurring = recurring
+        self.transactions = transactions
+        self.categories = categories
+
+    @log_call
+    def add(
+        self,
+        *,
+        day: str | int,
+        type_: str,
+        category: str,
+        amount: str | int,
+        memo: str = "",
+        tags: str | list[str] | None = None,
+    ) -> RecurringRule:
+        """add 와 같은 검증을 거쳐 규칙을 1줄 추가한다."""
+        rule = RecurringRule(
+            id=self.recurring.next_id(),
+            day=parse_day(day),
+            type=parse_type(type_),
+            amount=parse_amount(amount),
+            category=require_category(self.categories, category),
+            memo=parse_memo(memo),
+            tags=parse_tags(tags),
+        )
+        self.recurring.append(rule)
+        return rule
+
+    @log_call
+    def list_all(self) -> list[RecurringRule]:
+        """파일 순서 = id 순서."""
+        return list(self.recurring.iter_all())
+
+    @log_call
+    def remove(self, rule_id: str) -> RecurringRule:
+        clean = rule_id.strip()
+        recurring_number(clean)
+        return self.recurring.remove(clean)
+
+    @log_call
+    @timed
+    def apply(self, month: str) -> ApplyResult:
+        """규칙마다 해당 월의 거래를 1건 만든다. 이미 적용(rc: 태그)되었거나 카테고리가 없으면 건너뛴다 (D44)."""
+        target = parse_month(month)
+        rules = self.list_all()
+        result = ApplyResult(month=target, rule_count=len(rules))
+        if not rules:
+            return result
+
+        applied: dict[str, str] = {}  # 규칙 id → 이미 만들어진 거래 id (거래 파일 1회 스트리밍)
+        for tx in self.transactions.iter_all():
+            if tx.date[:7] != target:
+                continue
+            for tag in tx.tags:
+                if tag.startswith(RECURRING_TAG_PREFIX):
+                    applied.setdefault(tag[len(RECURRING_TAG_PREFIX):], tx.id)
+
+        last_day = calendar.monthrange(int(target[:4]), int(target[5:7]))[1]
+        number = transaction_number(self.transactions.next_id())  # 시작 번호 1회 (D41 과 같은 방식)
+        for rule in rules:
+            if rule.id in applied:
+                result.skipped.append((rule.id, f"{target} 에 이미 적용됨 ({applied[rule.id]})"))
+                continue
+            try:
+                category = require_category(self.categories, rule.category)
+            except AppError as err:
+                result.skipped.append((rule.id, err.message))
+                continue
+            tx = Transaction(
+                id=format_transaction_id(number),
+                type=rule.type,
+                date=f"{target}-{min(rule.day, last_day):02d}",
+                amount=rule.amount,
+                category=category,
+                memo=rule.memo,
+                tags=parse_tags([*rule.tags, f"{RECURRING_TAG_PREFIX}{rule.id}"]),
+            )
+            self.transactions.append(tx)
+            number += 1
+            result.created += 1
+        return result
+
+
+@dataclass(slots=True)
 class Services:
     """cli 가 쓰는 서비스 묶음. 저장 폴더 1개에 대응한다."""
 
@@ -434,6 +542,7 @@ class Services:
     transactions: TransactionService
     categories: CategoryService
     budgets: BudgetService
+    recurring: RecurringService
     initialized: bool = False  # 이번 실행에서 저장 폴더·파일을 새로 만들었는지 (D36)
 
     @log_call
@@ -459,10 +568,12 @@ def build_services(data_dir: Path) -> Services:
     tx_repo = TransactionRepository(JsonlStore(data_dir / TRANSACTIONS_FILE))
     category_store = CategoryStore(JsonlStore(data_dir / CATEGORIES_FILE))
     budget_store = BudgetStore(JsonlStore(data_dir / BUDGETS_FILE))
+    recurring_store = RecurringStore(JsonlStore(data_dir / RECURRING_FILE))
     return Services(
         data_dir=data_dir,
         transactions=TransactionService(tx_repo, category_store),
         categories=CategoryService(category_store, tx_repo),
         budgets=BudgetService(budget_store, tx_repo),
+        recurring=RecurringService(recurring_store, tx_repo, category_store),
         initialized=initialized,
     )

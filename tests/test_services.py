@@ -291,7 +291,7 @@ class BackupScenario(ServicesTestCase):
 
         real = self.svc.backup()  # 실제 시각 스탬프 형식 YYYYMMDD-HHMMSS
         self.assertRegex(real.name, r"^\d{8}-\d{6}(-\d+)?$")
-        self.assertEqual(len(list(real.iterdir())), 3)
+        self.assertEqual(len(list(real.iterdir())), 4)  # recurring.jsonl 포함 (D44)
 
         # 백업 뒤 원본이 바뀌어도 백업은 그대로다 (복사본)
         self.svc.transactions.delete("TX-000001")
@@ -303,6 +303,64 @@ class BackupScenario(ServicesTestCase):
         with mock.patch("budget_app.services._backup_stamp", return_value="20240131-093001"):
             with self.assertRaises(StorageError):
                 self.svc.backup()
+
+
+class RecurringScenario(ServicesTestCase):
+    """반복 내역(B2, D44): add 검증·id, list, apply 생성·말일 보정·중복 방지·미등록 카테고리 skip, remove."""
+
+    def test_add_list_apply_remove(self) -> None:
+        self.assertEqual(self.svc.recurring.list_all(), [])
+        self.assertEqual(self.svc.recurring.apply("2024-02").rule_count, 0)
+        self.assertEqual(self.svc.transactions.list_recent(10), [])
+
+        first = self.svc.recurring.add(day="25", type_=" Income ", category="salary", amount="3000000", memo=" 월급 ")
+        second = self.svc.recurring.add(day=31, type_="expense", category="rent", amount=500000, memo="월세", tags="fixed, fixed")
+        self.assertEqual((first.id, first.day, first.type, first.amount, first.memo, first.tags), ("RC-000001", 25, "income", 3000000, "월급", []))
+        self.assertEqual((second.id, second.day, second.tags), ("RC-000002", 31, ["fixed"]))
+        for bad in (dict(day="0"), dict(day="32"), dict(day="1.5"), dict(day="abc"), dict(type_="transfer"),
+                    dict(category="coffee"), dict(amount="0")):
+            kwargs: dict[str, object] = dict(day=1, type_="expense", category="food", amount=1)
+            kwargs.update(bad)
+            with self.subTest(bad=bad):
+                with self.assertRaises((ValidationError, NotFoundError)):
+                    self.svc.recurring.add(**kwargs)  # type: ignore[arg-type]
+        self.assertEqual([r.id for r in self.svc.recurring.list_all()], ["RC-000001", "RC-000002"])
+
+        result = self.svc.recurring.apply(" 2024-02 ")
+        self.assertEqual((result.month, result.rule_count, result.created, result.skipped), ("2024-02", 2, 2, []))
+        txs = {t.id: t for t in self.svc.transactions.list_recent(10)}
+        self.assertEqual((txs["TX-000001"].date, txs["TX-000001"].type, txs["TX-000001"].tags), ("2024-02-25", "income", ["rc:RC-000001"]))
+        self.assertEqual((txs["TX-000002"].date, txs["TX-000002"].memo, txs["TX-000002"].tags), ("2024-02-29", "월세", ["fixed", "rc:RC-000002"]))  # 윤년 말일 보정
+
+        again = self.svc.recurring.apply("2024-02")
+        self.assertEqual((again.created, len(again.skipped)), (0, 2))
+        self.assertEqual(again.skipped[0], ("RC-000001", "2024-02 에 이미 적용됨 (TX-000001)"))
+        self.assertEqual(len(self.svc.transactions.list_recent(10)), 2)
+
+        self.assertEqual(self.svc.recurring.apply("2023-04").created, 2)  # 30일 달
+        april = self.svc.transactions.search(tag="rc:RC-000002", date_from="2023-04-01", date_to="2023-04-30")
+        self.assertEqual([t.date for t in april], ["2023-04-30"])
+        self.assertEqual(self.svc.transactions.search(tag="rc:RC-000001")[0].date, "2024-02-25")
+
+        # 미등록 카테고리가 된 규칙은 사유와 함께 skip, 나머지는 생성
+        self.svc.categories.add("cafe")
+        third = self.svc.recurring.add(day=1, type_="expense", category="cafe", amount=4500)
+        self.svc.categories.remove("cafe")
+        res = self.svc.recurring.apply("2024-05")
+        self.assertEqual((res.created, res.skipped), (2, [(third.id, "등록되지 않은 카테고리입니다: cafe")]))
+
+        self.assertEqual(self.svc.recurring.remove(" RC-000003 ").id, "RC-000003")
+        with self.assertRaises(NotFoundError) as ctx:
+            self.svc.recurring.remove("RC-000003")
+        self.assertEqual(ctx.exception.message, "반복 내역을 찾을 수 없습니다: RC-000003")
+        with self.assertRaises(ValidationError):
+            self.svc.recurring.remove("TX-000001")
+        with self.assertRaises(ValidationError):
+            self.svc.recurring.apply("2024-2")
+        self.assertEqual([r.id for r in self.svc.recurring.list_all()], ["RC-000001", "RC-000002"])
+        # 다음 id 는 남은 최대 번호 + 1 이므로 삭제된 RC-000003 이 재발급된다 (TX 와 같은 규칙, D05·D44 의 문서화된 한계)
+        self.assertEqual(self.svc.recurring.add(day=5, type_="expense", category="food", amount=1).id, "RC-000003")
+        self.assertEqual(sorted(p.name for p in self.data_dir.iterdir() if p.suffix == ".tmp"), [])
 
 
 if __name__ == "__main__":

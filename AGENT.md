@@ -8,9 +8,9 @@
 
 1. [docs/MISSION_SPEC.md](docs/MISSION_SPEC.md) — 과제 명세 원문. **수정 금지.** 모든 요구의 근거.
 2. [README.md](README.md) — 명세 심층 분석(요구사항 R01~R25, B1~B4), 사용자 관점 사양(실행·저장·명령·CSV·종료 코드), 진행 현황.
-3. 이 문서 — 헌장(불변 규칙), 결정표 D01~D43, 계층·계약, Phase 계획, 검증 정책, Git 규칙.
+3. 이 문서 — 헌장(불변 규칙), 결정표 D01~D44, 계층·계약, Phase 계획, 검증 정책, Git 규칙.
 
-세 문서가 충돌하면 우선순위는 **원문 > 이 문서의 결정표 > README 사양 > 코드**다. 원문이 모호한 부분은 결정표가 해소한다. 결정표에 없는 모호함을 만나면 추측해서 구현하지 않고, 결정표에 D44부터 새 항목을 추가한 뒤 구현한다.
+세 문서가 충돌하면 우선순위는 **원문 > 이 문서의 결정표 > README 사양 > 코드**다. 원문이 모호한 부분은 결정표가 해소한다. 결정표에 없는 모호함을 만나면 추측해서 구현하지 않고, 결정표에 D45부터 새 항목을 추가한 뒤 구현한다.
 
 ## 2. 명세 주도 개발 원칙 (이 저장소의 SDD 해석)
 
@@ -27,7 +27,7 @@
 | --- | --- | --- |
 | C1 | **표준 라이브러리만** 사용한다. `pip install`이 필요한 패키지는 테스트·도구를 포함해 전면 금지. 테스트 러너는 `unittest`. | 원문 7장 |
 | C2 | Python **3.10 이상** 문법만. `match` 문과 `X \| Y` 타입은 허용, 3.11+ 전용 기능(`tomllib`, `ExceptionGroup`, `Self`)은 금지. | 원문 6장 |
-| C3 | 저장 포맷은 **JSONL**. 파일은 `transactions.jsonl`, `categories.jsonl`, `budgets.jsonl` 3개. 카운터·메타 파일을 추가하지 않는다. | 원문 4-3, D01, D05 |
+| C3 | 저장 포맷은 **JSONL**. 파일은 기본 3개(`transactions.jsonl`, `categories.jsonl`, `budgets.jsonl`) + 반복 내역 `recurring.jsonl`(D44, 원문 "3개 이상" 충족). 그 외 카운터·메타 파일 추가 금지. | 원문 4-3, D01, D05, D44 |
 | C4 | 옵션은 **`--long` 형식만**. 단축 옵션(`-l`)을 만들지 않는다. | 원문 4-1, 7장 |
 | C5 | 저장소 읽기는 **전부 제너레이터**(`yield`). `readlines()`, `json.load(전체)`, 리스트 변환 후 처리 금지. 정렬이 필요하면 `heapq.nlargest` 또는 필터 후 부분집합 정렬만 허용. | 원문 4-5, 4-7 |
 | C6 | 파일 재작성은 **임시 파일 + `os.replace`**. 원본을 직접 열어 덮어쓰지 않는다. | 원문 4-6, 보너스 4 |
@@ -38,7 +38,7 @@
 | C11 | 사용자 메시지·주석·docstring은 **한국어**, 식별자·JSON 키·CSV 헤더는 영어. 파일은 UTF-8(BOM 없음), LF. | 프로젝트 관례 |
 | C12 | `data/`, 백업, 내보낸 CSV, `__pycache__`는 커밋하지 않는다. 샘플 CSV만 `samples/`에 둔다. | 안전 |
 
-## 4. 결정표 (모호성 해소) — D01~D43
+## 4. 결정표 (모호성 해소) — D01~D44
 
 원문이 선택을 맡기거나 침묵한 지점의 **고정 결정**이다. 구현은 이 표를 따른다. 바꾸려면 표를 먼저 고친다.
 
@@ -72,7 +72,7 @@
 | D26 | category add 입력 | 위치 인자 `category add [name]` 선택. 없으면 대화형 `카테고리명: ` 프롬프트 | 원문 예시는 대화형, 스크립트 편의 추가 |
 | D27 | 기본값 | `list --limit` 20, `summary --top` 5, `search --limit` 무제한 | 원문 "기본값 제공" |
 | D28 | search 의미 | `--q` 메모 부분 일치(대소문자 무시), `--tag` 태그 정확 일치, `--from/--to` 포함 범위, 모든 조건 AND. 0건은 `[안내] 조건에 맞는 거래가 없습니다`, 종료 0 | 원문 4-7 |
-| D29 | 보너스 범위 | P7에서 테이블 정렬(B3)과 backup(B1)만 필수. 반복 내역(B2)은 P7 게이트 통과 후 시간이 남을 때만, 같은 커밋에 포함 | 커밋 수 제한 |
+| D29 | 보너스 범위 | P7에서 테이블 정렬(B3)과 backup(B1)만 필수. 반복 내역(B2)은 P7 에 넣지 않았고, 사용자 결정(2026-10-18)으로 남은 예비 커밋(P9)에서 D44 로 구현 | 커밋 수 제한 |
 | D30 | 콘솔 인코딩 | 진입점에서 `sys.stdout/stderr/stdin.reconfigure(encoding="utf-8")` 시도(실패 무시). 모든 파일 I/O `encoding="utf-8"` 명시 | Windows cp949 대비 |
 | D31 | 옵션형 `--type` 검증 위치 | `search --type`, `update --type` 은 argparse `choices` 로 제한하지 않고 서비스에서 `parse_type`(D10, strip + lower)로 검증한다. 실패는 종료 1 | D10의 관용 규칙(`Expense` 허용)을 옵션형에도 동일 적용, 검증 로직을 models 한 곳에 유지 |
 | D32 | 숫자 옵션의 검증 위치 | `--limit`·`--top` 은 argparse `type=positive_int` 로 검증(비정수·0·음수 → 사용법 오류, 종료 2). `--amount`·`--id`·날짜·월 옵션은 문자열로 받아 서비스에서 D08/D09 로 검증(종료 1) | 출력 건수는 사용법의 일부이고, 금액·날짜는 데이터 입력값이므로 종료 코드로 구분 |
@@ -87,7 +87,8 @@
 | D41 | import/export 세부 | **export**: `--month` 와 `--from/--to` 를 함께 주면 AND. 조건은 D38 과 같이 검증(`--from` > `--to` 종료 1). 통과분을 `(date, id)` 내림차순으로 `csv.writer`(`newline=""`, `lineterminator="
 "` 으로 LF 고정, UTF-8 BOM 없음) 에 쓰고, 출력 파일의 폴더가 없으면 `StorageError`(자동 생성 안 함). **import**: 파일 없음은 `StorageError("가져올 파일을 찾을 수 없습니다: {path}")` 종료 1. `utf-8-sig` 로 열어 BOM 을 허용하고, `csv.DictReader` 의 헤더에 필수 6열(`date,type,category,amount,memo,tags`, 이름 정확 일치) 이 모두 없으면 `ValidationError`(힌트에 필수 헤더) 로 저장 없이 종료 1. 열 순서는 무관하고 추가 열은 무시. 행 번호는 `reader.line_num`(헤더 1행, 첫 데이터 2행, 따옴표 안 줄바꿈 포함). 각 행은 `parse_*`·`require_category` 로 검증하고 AppError 의 `message` 를 skip 사유로 쓴다. 비어 있거나 모자란 열은 빈 문자열로 본다. id 는 `next_id` 로 시작 번호를 1회 구한 뒤 유효 행마다 +1 하여 `append` | D19·D20 보완. 대량 import 에서 next_id 재스캔(O(n²)) 회피 |
 | D42 | 테이블 정렬 (B3) | list/search/budget list 는 `formatting.format_transaction_table(rows)` / `format_budget_table(budgets)` 로 출력한다. 열 순서 `id \| date \| type \| category \| amount \| memo`, 구분자 ` \| `, id·date·type·category 좌정렬, amount 우정렬, 마지막 열(memo·금액원) 은 패딩 없음. 열 너비는 그 명령의 결과 리스트에서 계산하며, 너비 계산은 `unicodedata.east_asian_width` 가 W/F 인 문자를 2칸으로 센다. type 열 최소 너비 7. 결과는 `--limit`(list) 또는 필터 통과분(search) 으로 이미 메모리에 있는 소량 리스트이므로 렌더 전 너비 계산은 C5 위반이 아니다. 금액은 천 단위 구분 없이 숫자 그대로(README 5장 예시·스모크와 일치). 단일 행 함수 `format_transaction_row`/`format_budget_row` 는 호환용으로 남긴다 | 원문 보너스 3. 한글 메모·카테고리가 있어도 열이 어긋나지 않음 |
-| D43 | backup (B1) 과 B2 | `backup` 은 `{data_dir}/backups/{YYYYMMDD-HHMMSS}/` 를 만들고 3개 저장 파일을 `shutil.copy2` 로 복사한다(`repository.backup_files`). 같은 초에 다시 실행해 폴더가 이미 있으면 `-1`, `-2`, … 접미사를 붙여 덮어쓰지 않는다. 출력 `[완료] {경로} (3 files)`. 복사 실패는 StorageError. 반복 내역(B2) 은 **구현하지 않는다**(4번째 저장 파일이 필요해 C3 와 충돌, 커밋 한도) | 원문 보너스 1, D29 |
+| D43 | backup (B1) 과 B2 | `backup` 은 `{data_dir}/backups/{YYYYMMDD-HHMMSS}/` 를 만들고 저장 파일 4개(D44 포함)를 `shutil.copy2` 로 복사한다(`repository.backup_files`). 같은 초에 다시 실행해 폴더가 이미 있으면 `-1`, `-2`, … 접미사를 붙여 덮어쓰지 않는다. 출력 `[완료] {경로} (4 files)`. 복사 실패는 StorageError. 반복 내역(B2) 은 예비 커밋에서 D44 로 구현했다(C3 개정) | 원문 보너스 1, D29 |
+| D44 | 반복 내역 (B2) | 저장 파일 `recurring.jsonl`(4번째, C3 개정). 레코드 `{"id":"RC-000001","day":25,"type":"income","category":"salary","amount":3000000,"memo":"월급","tags":[]}`, 모델 `RecurringRule`, id 는 `RC-` + 6자리(TX 와 같은 규칙: 스트리밍 최대 + 1, 삭제 후 재발급 가능), `day` 는 1~31 정수(`parse_day`). 명령 `recurring add`(대화형: `매월 며칠(1~31): `, 타입, 카테고리, 금액, 메모, 태그 — add 와 같은 `ask` 루프·검증), `recurring list`(`id \| 매월 N일 \| type \| category \| amount \| memo` 테이블, 0건 `[안내] 등록된 반복 내역이 없습니다`), `recurring remove --id RC-xxxxxx`(형식 오류 ValidationError, 없는 id `NotFoundError("반복 내역을 찾을 수 없습니다: {id}")` 종료 1, 성공 `[삭제 완료] id=RC-000001`), `recurring apply --month YYYY-MM`: 규칙 0건이면 `[안내] 등록된 반복 내역이 없습니다` 종료 0. 거래 파일을 1회 스트리밍해 해당 월에 `rc:{규칙id}` 태그가 있는 규칙 집합을 만든 뒤, 규칙마다 (이미 적용 → skip `{월} 에 이미 적용됨 ({거래id})`, 미등록 카테고리 → skip 사유 = NotFoundError 메시지) 아니면 날짜 `{월}-{min(day, 말일):02d}`(`calendar.monthrange`), 태그 = 규칙 태그 + `rc:{규칙id}`, id 는 `next_id` 1회 후 +1 로 append. 출력 `[완료] {월} 반복 내역 적용 created=N, skipped=M` + skip 사유 줄 `  - RC-000001: {사유}`. `ensure_initialized` 는 4개 파일을 만들고 `backup` 은 4개를 복사(`(4 files)`) | 원문 보너스 2. 사용자 결정(2026-10-18)으로 남은 예비 커밋 1회를 사용. 중복 생성 방지는 거래 자체에 남는 `rc:` 태그로 하여 추가 메타 파일을 두지 않음 |
 
 ## 5. 계층과 모듈 책임
 
@@ -96,8 +97,8 @@ budget_app/
   __main__.py     main() 호출, sys.exit(code)
   cli.py          argparse 트리, 대화형 프롬프트(input_fn 주입), 출력 포맷 호출. 파일 I/O 금지
   services.py     유스케이스. 검증 조합, id 발급, 집계, 재배정. 저장소만 호출
-  repository.py   JsonlStore(경로 1개: iter/append/rewrite) + TransactionRepository/CategoryStore/BudgetStore + ensure_initialized/backup_files
-  models.py       @dataclass Transaction, Category, Budget. 필드 검증 함수, to_dict/from_dict
+  repository.py   JsonlStore(경로 1개: iter/append/rewrite) + TransactionRepository/CategoryStore/BudgetStore/RecurringStore + ensure_initialized/backup_files
+  models.py       @dataclass Transaction, Category, Budget, RecurringRule. 필드 검증 함수, to_dict/from_dict
   decorators.py   handle_errors, log_call, timed
   errors.py       AppError(message, hint, exit_code=1) 와 하위 예외, EXIT_* 상수
   formatting.py   테이블 열 정렬(전각 폭 계산, 금액 우정렬)·행 렌더링. 천 단위 구분 없음 (D42)
@@ -159,7 +160,11 @@ class Budget:
 | `delete` | `--id` (필수) | `[삭제 완료] id=...` | 없는 id 1 |
 | `import` | `--from PATH` (필수) | `[완료] imported=N, skipped=M` + skip 사유 줄 | 파일·헤더 1 |
 | `export` | `--out PATH` (필수) + `--month` 또는 `--from/--to` | `[완료] {out} ({N} records)` | 조건 없음 2 |
-| `backup` | — | `[완료] data/backups/{ts} (3 files)` | — |
+| `backup` | — | `[완료] data/backups/{ts} (4 files)` | — |
+| `recurring add` | 대화형 6항목 (매월 일, 타입, 카테고리, 금액, 메모, 태그) | `[저장 완료] id=RC-000001` | 중단 130 |
+| `recurring list` | — | `id \| 매월 N일 \| type \| category \| amount \| memo`, 0건 안내 | — |
+| `recurring remove` | `--id` (필수) | `[삭제 완료] id=RC-...` | 없는 id 1 |
+| `recurring apply` | `--month YYYY-MM` (필수) | `[완료] {월} 반복 내역 적용 created=N, skipped=M` + skip 사유 줄, 규칙 0건 안내 | 월 형식 1 |
 
 출력 행 포맷(list/search): `id | date | type(7자리 좌정렬) | category | amount(우정렬) | memo`. P7에서 열 너비를 데이터에 맞춰 정렬한다.
 
@@ -232,11 +237,11 @@ class StorageError(AppError): ...      # 손상된 줄, 파일 권한, 재작성
 - 완료 조건: 스모크 6 = `import` 샘플 → `imported=5, skipped=1` → `export --month` → 파일 헤더·행수 확인 → 빈 data-dir에 다시 `import` 한 export 파일 → 건수 동일(라운드트립) → `export` 조건 없음 종료 2
 - 커밋: `feat: CSV 가져오기·내보내기 구현`
 
-### P7 — 보너스 (완료, B2 제외)
+### P7 — 보너스 (완료, B2 는 P9)
 
 - 산출: `formatting.py` 테이블 정렬(B3), `backup` 명령(B1), (선택) 반복 내역(B2)
 - 범위: list/search/budget list 열 너비 정렬, 금액 우정렬, `backup` → `data/backups/{YYYYMMDD-HHMMSS}/` 3파일 복사(`shutil.copy2`)
-- 완료 조건: 스모크 전체(1, 3~6) 재통과 + 스모크 7 = `backup` 폴더에 파일 3개 + 테이블 구분자 위치 일치
+- 완료 조건: 스모크 전체(1, 3~6) 재통과 + 스모크 7 = `backup` 폴더에 파일 3개(P9 이후 4개) + 테이블 구분자 위치 일치
 - 커밋: `feat: 테이블 출력과 백업 추가`
 
 ### P8 — 마무리 (완료)
@@ -246,9 +251,12 @@ class StorageError(AppError): ...      # 손상된 줄, 파일 권한, 재작성
 - 완료 조건: `python scripts/verify.py` 전체 PASS, README 사양과 실제 출력 불일치 0건
 - 커밋: `docs: 실행 결과 반영과 최종 검증 기록`
 
-### 예비 1회
+### 예비 1회 → P9 — 반복 내역 B2 (완료, 사용자 결정 2026-10-18)
 
-- 게이트 통과 후 발견된 결함 수정 전용. `fix: ...`. 기능 추가에 쓰지 않는다.
+- 원칙은 결함 수정 전용(`fix:`)이었으나 P8 까지 게이트 실패가 없어, 남은 1회를 사용자 결정으로 보너스 B2 구현에 썼다(D44, C3 개정).
+- 산출: `models.RecurringRule`/`parse_day`, `repository.RecurringStore`/`recurring.jsonl`, `services.RecurringService`, `cli` 의 `recurring add/list/remove/apply`, `formatting.format_recurring_table`, 테스트 시나리오(test_services·test_repository 갱신), 스모크 9
+- 완료 조건: 스모크 9 = `recurring add` 2건(1건은 잘못된 일 재입력) → `apply --month 2024-02`(created=2, 31일 → 02-29 보정) → `list` → 재 `apply`(created=0, skipped=2) → 미등록 카테고리 규칙 skip → `remove` / 스모크 7 의 backup 은 4파일
+- 커밋: `feat: 반복 내역 등록과 월별 자동 생성 추가` (누계 10/10)
 
 ## 10. 검증 정책 — 최소 단위
 
@@ -265,7 +273,7 @@ class StorageError(AppError): ...      # 손상된 줄, 파일 권한, 재작성
 ## 11. Git 규칙
 
 - 브랜치: 개인 과제이므로 `main`에 직접 커밋한다. 브랜치·PR을 만들지 않는다.
-- 커밋 메시지: `<type>: <한국어 요약>` 한 줄. type은 `docs`, `feat`, `fix`. 본문에는 Phase 번호와 게이트 결과 한 줄(`verify: PASS (unittest 29, smoke 1, 3, 4, 5, 6, 7)`)을 적는다. 마지막 줄에 `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` 를 포함한다.
+- 커밋 메시지: `<type>: <한국어 요약>` 한 줄. type은 `docs`, `feat`, `fix`. 본문에는 Phase 번호와 게이트 결과 한 줄(`verify: PASS (unittest 30, smoke 1, 3, 4, 5, 6, 7, 9)`)을 적는다. 마지막 줄에 `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` 를 포함한다.
 - 작성자: 로컬 git 설정(`Cerhovah`)을 그대로 쓴다. `--author`로 바꾸지 않는다.
 - 푸시: 커밋 직후 `git push origin main` 1회. force push 금지. amend 금지(예비 커밋을 사용).
 - 커밋 전 확인: `git status`에 `data/`, `*.csv`(samples 제외), `__pycache__`, 백업이 없을 것.
@@ -294,4 +302,4 @@ Phase N 완료 — <커밋 제목>
 - 전체 파일 로드(`readlines`, `list(gen)` 후 처리), 원본 직접 덮어쓰기
 - 스택트레이스 노출, 종료 코드 0으로 오류 종료
 - 한 Phase 안의 다중 커밋, Phase 합치기, force push, amend
-- 결정표에 없는 기능 추가(보너스 B2 포함) — D31+에 기록 후 승인 대기
+- 결정표에 없는 기능 추가 — D45+에 기록 후 승인 대기 (B2 는 D44 로 승인·구현됨)

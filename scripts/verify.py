@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parent.parent
-CURRENT_PHASE = 7  # 구현이 끝난 마지막 Phase. Phase 를 완료할 때마다 올린다.
+CURRENT_PHASE = 9  # 구현이 끝난 마지막 Phase. Phase 를 완료할 때마다 올린다.
 
 SmokeFn = Callable[[Path], None]
 
@@ -395,22 +395,87 @@ def smoke_phase7(data_dir: Path) -> None:
     proc = run_cli(data_dir, "budget", "list")
     expect(stdout_lines(proc) == ["2024-01 | 100000원", "2024-02 |   5000원"], "budget list 금액 우정렬 (D42)", proc)
 
-    # backup: 폴더 1개에 파일 3개, 내용 동일, 재실행은 다른 폴더(같은 초면 -1 접미사)
+    # backup: 폴더 1개에 파일 4개(recurring.jsonl 포함, D44), 내용 동일, 재실행은 다른 폴더(같은 초면 -1 접미사)
     proc = run_cli(data_dir, "backup")
     expect(proc.returncode == 0 and len(stdout_lines(proc)) == 1, "backup 종료 0, 한 줄 출력", proc)
     line = stdout_lines(proc)[0]
-    expect(line.startswith("[완료] ") and line.endswith(" (3 files)"), "backup 출력 형식 (README 5.10)", proc)
-    target = Path(line[len("[완료] "):-len(" (3 files)")])
+    expect(line.startswith("[완료] ") and line.endswith(" (4 files)"), "backup 출력 형식 (README 5.10)", proc)
+    target = Path(line[len("[완료] "):-len(" (4 files)")])
     expect(target.parent == data_dir / "backups" and target.is_dir(), "backups/{스탬프} 폴더", proc)
-    expect(sorted(p.name for p in target.iterdir()) == ["budgets.jsonl", "categories.jsonl", "transactions.jsonl"], "백업 파일 3개", proc)
-    for name in ("transactions.jsonl", "categories.jsonl", "budgets.jsonl"):
+    expect(sorted(p.name for p in target.iterdir()) == ["budgets.jsonl", "categories.jsonl", "recurring.jsonl", "transactions.jsonl"], "백업 파일 4개", proc)
+    for name in ("transactions.jsonl", "categories.jsonl", "budgets.jsonl", "recurring.jsonl"):
         expect((target / name).read_bytes() == (data_dir / name).read_bytes(), f"백업 {name} 내용 동일")
     proc = run_cli(data_dir, "backup")
-    second = Path(stdout_lines(proc)[0][len("[완료] "):-len(" (3 files)")])
-    expect(second != target and second.is_dir() and len(list(second.iterdir())) == 3, "재실행은 다른 폴더 (D43)", proc)
+    second = Path(stdout_lines(proc)[0][len("[완료] "):-len(" (4 files)")])
+    expect(second != target and second.is_dir() and len(list(second.iterdir())) == 4, "재실행은 다른 폴더 (D43)", proc)
     expect(len(list((data_dir / "backups").iterdir())) == 2, "backups 폴더에 2개")
 
     check_verbose_contract(data_dir)
+
+
+# ---------------------------------------------------------------------------
+# Phase 9(예비) — recurring add(재입력) → apply(말일 보정) → list → 재 apply(중복 방지) → 미등록 카테고리 skip → remove
+# ---------------------------------------------------------------------------
+
+
+def smoke_phase9(data_dir: Path) -> None:
+    run_cli(data_dir, "list")  # 초기화 안내 소비
+    expect(data_dir.joinpath("recurring.jsonl").is_file(), "초기화가 recurring.jsonl 도 만든다 (D44)")
+    proc = run_cli(data_dir, "recurring", "list")
+    expect(proc.returncode == 0 and stdout_lines(proc) == ["[안내] 등록된 반복 내역이 없습니다"], "규칙 0건 list 안내", proc)
+    proc = run_cli(data_dir, "recurring", "apply", "--month", "2024-02")
+    expect(proc.returncode == 0 and stdout_lines(proc) == ["[안내] 등록된 반복 내역이 없습니다"], "규칙 0건 apply 안내, 종료 0", proc)
+
+    proc = run_cli(data_dir, "recurring", "add", input_text="25\nincome\nsalary\n3000000\n월급\n\n")
+    expect(proc.returncode == 0 and "[저장 완료] id=RC-000001" in proc.stdout, "recurring add 1", proc)
+    proc = run_cli(data_dir, "recurring", "add", input_text="0\n31\nexpense\nrent\n500000\n월세\nfixed\n")
+    expect(proc.returncode == 0 and "[저장 완료] id=RC-000002" in proc.stdout, "recurring add 2 (잘못된 일 재입력 후)", proc)
+    expect("[오류] 매월 일은 1~31 사이의 정수여야 합니다 (입력: 0)" in proc.stdout and proc.stdout.count("매월 며칠(1~31): ") == 2, "일 재입력 (D13)", proc)
+
+    proc = run_cli(data_dir, "recurring", "list")
+    rows = [cells(line) for line in stdout_lines(proc)]
+    expect(rows == [["RC-000001", "매월 25일", "income", "salary", "3000000", "월급"], ["RC-000002", "매월 31일", "expense", "rent", "500000", "월세"]], "recurring list 테이블", proc)
+
+    proc = run_cli(data_dir, "recurring", "apply", "--month", "2024-02")
+    expect(proc.returncode == 0 and stdout_lines(proc) == ["[완료] 2024-02 반복 내역 적용 created=2, skipped=0"], "apply 2024-02", proc)
+    rows = list_rows(data_dir)
+    expect([r[:5] for r in rows] == [["TX-000002", "2024-02-29", "expense", "rent", "500000"], ["TX-000001", "2024-02-25", "income", "salary", "3000000"]], "생성 거래 (31일 → 02-29 보정)")
+    proc = run_cli(data_dir, "search", "--tag", "rc:RC-000002")
+    expect([cells(line)[0] for line in stdout_lines(proc)] == ["TX-000002"], "rc: 태그로 추적 가능", proc)
+    proc = run_cli(data_dir, "search", "--tag", "fixed")
+    expect([cells(line)[0] for line in stdout_lines(proc)] == ["TX-000002"], "규칙 태그 유지", proc)
+
+    proc = run_cli(data_dir, "recurring", "apply", "--month", "2024-02")
+    lines = stdout_lines(proc)
+    expect(proc.returncode == 0 and lines[0] == "[완료] 2024-02 반복 내역 적용 created=0, skipped=2", "재 apply 는 중복 생성 안 함", proc)
+    expect(lines[1] == "  - RC-000001: 2024-02 에 이미 적용됨 (TX-000001)" and lines[2].startswith("  - RC-000002: 2024-02 에 이미 적용됨"), "skip 사유 줄", proc)
+    expect(len(list_rows(data_dir)) == 2, "거래 건수 유지")
+    proc = run_cli(data_dir, "recurring", "apply", "--month", "2024-04")
+    expect(stdout_lines(proc)[0] == "[완료] 2024-04 반복 내역 적용 created=2, skipped=0", "다른 달은 생성", proc)
+    proc = run_cli(data_dir, "search", "--from", "2024-04-30", "--to", "2024-04-30")
+    expect([cells(line)[3] for line in stdout_lines(proc)] == ["rent"], "30일 달 보정", proc)
+
+    # 미등록 카테고리가 된 규칙은 skip 사유 출력
+    run_cli(data_dir, "category", "add", "cafe")
+    proc = run_cli(data_dir, "recurring", "add", input_text="1\nexpense\ncafe\n4500\n커피\n\n")
+    expect("[저장 완료] id=RC-000003" in proc.stdout, "recurring add 3", proc)
+    proc = run_cli(data_dir, "category", "remove", "--name", "cafe")
+    expect(proc.returncode == 0, "규칙만 쓰는 카테고리는 삭제 가능", proc)
+    proc = run_cli(data_dir, "recurring", "apply", "--month", "2024-05")
+    expect(stdout_lines(proc) == ["[완료] 2024-05 반복 내역 적용 created=2, skipped=1", "  - RC-000003: 등록되지 않은 카테고리입니다: cafe"], "미등록 카테고리 skip", proc)
+
+    expect_two_line_error(run_cli(data_dir, "recurring", "remove", "--id", "RC-000009"), "[오류] 반복 내역을 찾을 수 없습니다: RC-000009", "없는 규칙 remove")
+    expect_two_line_error(run_cli(data_dir, "recurring", "remove", "--id", "TX-000001"), "[오류] 반복 내역 id 형식이 올바르지 않습니다 (입력: TX-000001)", "id 형식 오류")
+    proc = run_cli(data_dir, "recurring", "remove", "--id", "RC-000003")
+    expect(proc.returncode == 0 and stdout_lines(proc) == ["[삭제 완료] id=RC-000003"], "recurring remove", proc)
+    proc = run_cli(data_dir, "recurring", "list")
+    expect([cells(line)[0] for line in stdout_lines(proc)] == ["RC-000001", "RC-000002"], "remove 후 list", proc)
+    expect_two_line_error(run_cli(data_dir, "recurring", "apply", "--month", "2024-13"), "[오류] 존재하지 않는 월입니다: 2024-13", "월 검증")
+    proc = run_cli(data_dir, "recurring", "remove")
+    expect(proc.returncode == 2 and "Traceback" not in proc.stderr, "--id 누락은 사용법 오류 2", proc)
+    for target in (["recurring"], ["recurring", "add"], ["recurring", "list"], ["recurring", "remove"], ["recurring", "apply"]):
+        proc = run_cli(data_dir, *target, "--help")
+        expect(proc.returncode == 0 and "usage" in proc.stdout.lower(), "recurring --help", proc)
 
 
 SMOKES: dict[int, SmokeFn] = {
@@ -420,6 +485,7 @@ SMOKES: dict[int, SmokeFn] = {
     5: smoke_phase5,
     6: smoke_phase6,
     7: smoke_phase7,
+    9: smoke_phase9,
 }
 
 

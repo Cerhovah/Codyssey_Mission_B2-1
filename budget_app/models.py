@@ -18,16 +18,19 @@ TRANSACTION_TYPES: tuple[str, ...] = (TYPE_INCOME, TYPE_EXPENSE)
 
 TRANSACTION_ID_PREFIX = "TX-"
 TRANSACTION_ID_WIDTH = 6
+RECURRING_ID_PREFIX = "RC-"  # D44
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
 _AMOUNT_RE = re.compile(r"^[0-9]+$")
 _TRANSACTION_ID_RE = re.compile(r"^TX-(\d{6,})$")
+_RECURRING_ID_RE = re.compile(r"^RC-(\d{6,})$")
 
 DATE_HINT = "예: 2024-01-15"
 MONTH_HINT = "예: 2024-01"
 AMOUNT_HINT = "예: 15000 (소수점·쉼표·부호 없이 양의 정수)"
 TYPE_HINT = "income 또는 expense 중 하나를 입력하세요"
+DAY_HINT = "1~31 사이의 정수 (그 달에 없는 날은 말일로 보정됩니다)"
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +145,38 @@ def transaction_number(tx_id: str) -> int:
     return int(match.group(1))
 
 
+def parse_day(value: str | int) -> int:
+    """반복 내역의 매월 일: 1~31 정수 (D44). 그 달에 없는 날은 apply 시 말일로 보정한다."""
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ValidationError("매월 일은 1~31 사이의 정수여야 합니다", hint=DAY_HINT)
+    if isinstance(value, int):
+        number = value
+        shown = str(value)
+    else:
+        shown = value.strip()
+        if not _AMOUNT_RE.match(shown):
+            raise ValidationError(f"매월 일은 1~31 사이의 정수여야 합니다 (입력: {shown})", hint=DAY_HINT)
+        number = int(shown)
+    if not 1 <= number <= 31:
+        raise ValidationError(f"매월 일은 1~31 사이의 정수여야 합니다 (입력: {shown})", hint=DAY_HINT)
+    return number
+
+
+def format_recurring_id(number: int) -> str:
+    """`RC-` + 6자리 0패딩 (D44). 규칙은 TX 와 같다."""
+    if number <= 0:
+        raise ValidationError(f"반복 내역 번호는 1 이상이어야 합니다 (입력: {number})")
+    return f"{RECURRING_ID_PREFIX}{number:0{TRANSACTION_ID_WIDTH}d}"
+
+
+def recurring_number(rule_id: str) -> int:
+    """`RC-000001` → 1. 형식이 다르면 ValidationError."""
+    match = _RECURRING_ID_RE.match(rule_id.strip()) if isinstance(rule_id, str) else None
+    if match is None:
+        raise ValidationError(f"반복 내역 id 형식이 올바르지 않습니다 (입력: {rule_id})", hint="예: RC-000001")
+    return int(match.group(1))
+
+
 # ---------------------------------------------------------------------------
 # dataclass 와 직렬화
 # ---------------------------------------------------------------------------
@@ -243,4 +278,44 @@ class Budget:
         return cls(
             month=parse_month(_require_str(record, "month")),
             amount=parse_amount(_require_int(record, "amount")),
+        )
+
+
+@dataclass(slots=True)
+class RecurringRule:
+    """반복 내역 규칙: 매월 `day` 일에 생성할 거래의 틀 (보너스 B2, D44)."""
+
+    id: str
+    day: int
+    type: str
+    amount: int
+    category: str
+    memo: str = ""
+    tags: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "day": self.day,
+            "type": self.type,
+            "category": self.category,
+            "amount": self.amount,
+            "memo": self.memo,
+            "tags": list(self.tags),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RecurringRule:
+        record = _require_mapping(data, "반복 내역")
+        rule_id = _require_str(record, "id").strip()
+        if not rule_id:
+            raise ValidationError("필수 항목 'id'이(가) 비어 있습니다")
+        return cls(
+            id=rule_id,
+            day=parse_day(_require_int(record, "day")),
+            type=parse_type(_require_str(record, "type")),
+            amount=parse_amount(_require_int(record, "amount")),
+            category=parse_category_name(_require_str(record, "category")),
+            memo=parse_memo(record.get("memo", "")),
+            tags=parse_tags(record.get("tags", [])),
         )

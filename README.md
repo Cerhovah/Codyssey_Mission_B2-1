@@ -8,7 +8,7 @@
 | --- | --- |
 | [docs/MISSION_SPEC.md](docs/MISSION_SPEC.md) | 과제 명세 **원문 보존** (수정 금지) |
 | `README.md` (이 문서) | 명세 심층 분석, 사용자 관점 사양(실행·저장·명령·CSV), 진행 현황 |
-| [AGENT.md](AGENT.md) | 개발 헌장, 모호성 결정표 D01~D43, 계층·계약, 9단계 커밋 계획, 검증 정책 |
+| [AGENT.md](AGENT.md) | 개발 헌장, 모호성 결정표 D01~D44, 계층·계약, 9단계 커밋 계획, 검증 정책 |
 
 진행 상태: **Phase 8 완료 — 10개 명령 + 보너스(테이블 정렬·backup) 구현·검증 완료**. 5장 "명령 예시"는 실제 실행 출력이다.
 
@@ -18,7 +18,7 @@
 
 ### 1.1 한 줄 정의
 
-`python -m budget_app <command> [--options]` 로 동작하는 가계부 CLI. 거래(수입/지출)를 **JSONL 파일 3개**(transactions / categories / budgets)에 영구 저장하고, 10개 명령(add · list · search · summary · budget · category · update · delete · import · export)을 제공한다.
+`python -m budget_app <command> [--options]` 로 동작하는 가계부 CLI. 거래(수입/지출)를 **JSONL 파일 4개**(transactions / categories / budgets / recurring)에 영구 저장하고, 10개 명령(add · list · search · summary · budget · category · update · delete · import · export)과 보너스 명령 backup · recurring 을 제공한다.
 
 ### 1.2 명세가 실제로 평가하는 것
 
@@ -44,7 +44,7 @@
 | R05 | 클래스 2개 이상 (4-2) | `Transaction`, `Budget`, `JsonlStore`, `TransactionRepository`, `CategoryStore`, `BudgetStore`, `BudgetService` | P1~P2 |
 | R06 | 입력 검증: 날짜/금액/type/category (4-2) | `models.py` 검증 함수, `services.py` | P1, P3 |
 | R07 | JSONL 또는 CSV 1개 선택 (4-3) | JSONL (D01) | P2 |
-| R08 | 저장 파일 3개 이상 분리 (2-10, 4-3) | `transactions.jsonl`, `categories.jsonl`, `budgets.jsonl` | P2 |
+| R08 | 저장 파일 3개 이상 분리 (2-10, 4-3) | `transactions.jsonl`, `categories.jsonl`, `budgets.jsonl` + `recurring.jsonl`(B2) | P2, P9 |
 | R09 | 기본 `./data`, `--data-dir`로 변경 (4-3) | 전역 옵션 `--data-dir` | P1~P2 |
 | R10 | 초기 실행 시 자동 생성 + 안내 / 빈 카테고리 처리 (4-3) | 안 A 기본 카테고리 자동 생성 (D04) | P2 |
 | R11 | add 대화형, category 존재 검사, id 출력 (4-4) | `add` | P3 |
@@ -63,13 +63,13 @@
 | R24 | README: 실행 방법, 저장 위치/형식, 명령 예시, CSV 스키마 (2-10) | 이 문서 3~6장 | P0, P8 |
 | R25 | 표준 라이브러리만 (7장) | 테스트 러너도 `unittest` (D24) | 전체 |
 | B1 | (보너스) backup 타임스탬프 백업 | `backup` | P7 |
-| B2 | (보너스) 반복 내역 | 선택, 시간 여유 시 | P7 (선택) |
+| B2 | (보너스) 반복 내역 | `recurring add/list/remove/apply`, `recurring.jsonl` (D44) | P9 (예비 커밋) |
 | B3 | (보너스) 테이블 정렬 출력 | `formatting.py` | P7 |
 | B4 | (보너스) 저장 원자성 | R15와 동일 구현으로 자동 충족 | P2 |
 
 ### 1.4 숨은 요구와 모순 — 반드시 결정해야 했던 지점
 
-명세를 읽는 것만으로는 구현이 갈라지는 지점이 11곳 있었다. 명세 주도 개발에서는 이런 지점을 추측하지 않고 **결정표로 고정**한다. 전체 결정은 [AGENT.md 4장](AGENT.md) D01~D43에 있고, 여기서는 왜 그 결정인지 핵심만 적는다.
+명세를 읽는 것만으로는 구현이 갈라지는 지점이 11곳 있었다. 명세 주도 개발에서는 이런 지점을 추측하지 않고 **결정표로 고정**한다. 전체 결정은 [AGENT.md 4장](AGENT.md) D01~D44에 있고, 여기서는 왜 그 결정인지 핵심만 적는다.
 
 1. **"최신순"과 "스트리밍"은 서로 당긴다.** 최신순 정렬은 원칙적으로 전체를 봐야 하지만, 명세는 전체 로드를 금지한다. 해법은 `heapq.nlargest(limit, 제너레이터)`. 파일은 한 줄씩 흐르고 메모리는 limit개만 유지한다. search는 필터를 통과한 부분집합만 정렬한다 (D07).
 2. **옵션 표기가 명세 안에서 흔들린다.** 본문에 `-limit`, `-from`, `-top`, `-data-dir`가 섞여 있지만 4장 1항이 `--` 통일을 명시한다. 마크다운 변환 손실로 판단하고 **롱 옵션만** 제공한다 (D02).
@@ -105,9 +105,9 @@ GitHub Spec Kit의 네 단계(Specify → Plan → Tasks → Implement)는 이 �
 | Spec Kit 단계 | 이 저장소 |
 | --- | --- |
 | Constitution (불변 원칙) | AGENT.md 3장 "헌장" |
-| Specify (무엇을, 왜) | docs/MISSION_SPEC.md + README 1장 분석 + `[NEEDS CLARIFICATION]` 대신 결정표 D01~D43 |
+| Specify (무엇을, 왜) | docs/MISSION_SPEC.md + README 1장 분석 + `[NEEDS CLARIFICATION]` 대신 결정표 D01~D44 |
 | Plan (어떻게) | AGENT.md 5~8장 계층·데이터 계약·CLI 계약·오류 규약 |
-| Tasks (작게 나눠 검증) | AGENT.md 9장 Phase 0~8, 각 1커밋 1푸시 1게이트 |
+| Tasks (작게 나눠 검증) | AGENT.md 9장 Phase 0~8 + 예비(P9), 각 1커밋 1푸시 1게이트 |
 | Implement | Phase 순서대로, 게이트 통과 후에만 다음 단계 |
 
 참고한 원문:
@@ -154,13 +154,14 @@ python scripts/verify.py
 | `data/transactions.jsonl` | 거래 내역 | `{"id":"TX-000012","type":"expense","date":"2024-01-15","amount":15000,"category":"food","memo":"점심","tags":["meal"]}` |
 | `data/categories.jsonl` | 카테고리 | `{"name":"food"}` |
 | `data/budgets.jsonl` | 월 예산 | `{"month":"2024-01","amount":500000}` |
+| `data/recurring.jsonl` | 반복 내역 규칙 (보너스 B2, D44) | `{"id":"RC-000001","day":25,"type":"income","category":"salary","amount":3000000,"memo":"월급","tags":[]}` |
 
 - 포맷: **JSONL** (JSON Lines). UTF-8, LF, 한 줄에 JSON 객체 하나. `ensure_ascii=False`로 한글을 그대로 저장한다.
 - 읽기: 항상 제너레이터로 한 줄씩. 빈 줄은 건너뛴다.
 - 추가: 파일 끝에 1줄 append.
 - 수정·삭제·재배정: 같은 폴더의 임시 파일에 전체를 다시 쓴 뒤 `os.replace`로 교체한다 (원자적 교체).
-- 첫 실행: 폴더와 파일 3개를 만들고 `[안내] 저장 폴더를 초기화했습니다: ./data` 를 출력한다. 카테고리 파일이 비어 있으면 기본 카테고리 `food, transport, rent, salary, etc` 를 자동 등록한다.
-- 백업(보너스): `backup` 실행 시 `data/backups/YYYYMMDD-HHMMSS/` 아래에 3개 파일을 복사한다. 같은 초에 다시 실행하면 `-1`, `-2` 접미사를 붙여 덮어쓰지 않는다.
+- 첫 실행: 폴더와 파일 4개를 만들고 `[안내] 저장 폴더를 초기화했습니다: ./data` 를 출력한다. 카테고리 파일이 비어 있으면 기본 카테고리 `food, transport, rent, salary, etc` 를 자동 등록한다.
+- 백업(보너스): `backup` 실행 시 `data/backups/YYYYMMDD-HHMMSS/` 아래에 4개 파일을 복사한다. 같은 초에 다시 실행하면 `-1`, `-2` 접미사를 붙여 덮어쓰지 않는다.
 
 `data/` 는 `.gitignore` 대상이다. 저장소에는 샘플 CSV만 `samples/` 에 둔다.
 
@@ -417,12 +418,63 @@ export는 `--month` 또는 `--from/--to` 중 하나 이상이 **필수**다(둘 
 
 ```text
 $ python -m budget_app backup
-[완료] data\backups\20261018-183255 (3 files)
+[완료] data\backups\20261018-203507 (4 files)
 ```
 
-`transactions.jsonl`, `categories.jsonl`, `budgets.jsonl` 세 파일을 타임스탬프 폴더에 복사한다. 같은 초에 다시 실행하면 `-1`, `-2` 접미사를 붙여 덮어쓰지 않는다.
+`transactions.jsonl`, `categories.jsonl`, `budgets.jsonl`, `recurring.jsonl` 네 파일을 타임스탬프 폴더에 복사한다. 같은 초에 다시 실행하면 `-1`, `-2` 접미사를 붙여 덮어쓰지 않는다.
 
-### 5.11 상세 로그 — `--verbose`
+### 5.11 recurring — 반복 내역 (보너스)
+
+반복되는 수입·지출(월급, 월세 등)을 규칙으로 등록해 두고, 달마다 `apply` 로 거래를 한 번에 만든다(D44). 규칙 파일은 `data/recurring.jsonl`.
+
+```text
+$ python -m budget_app recurring add
+매월 며칠(1~31): 25
+타입(income/expense): income
+카테고리: salary
+금액(양수 정수): 3000000
+메모(선택): 월급
+태그(쉼표로 구분, 없으면 엔터):
+[저장 완료] id=RC-000001
+
+$ python -m budget_app recurring add
+매월 며칠(1~31): 31
+타입(income/expense): expense
+카테고리: rent
+금액(양수 정수): 500000
+메모(선택): 월세
+태그(쉼표로 구분, 없으면 엔터): fixed
+[저장 완료] id=RC-000002
+
+$ python -m budget_app recurring list
+RC-000001 | 매월 25일 | income  | salary | 3000000 | 월급
+RC-000002 | 매월 31일 | expense | rent   |  500000 | 월세
+
+$ python -m budget_app recurring apply --month 2024-02
+[완료] 2024-02 반복 내역 적용 created=2, skipped=0
+
+$ python -m budget_app list
+TX-000002 | 2024-02-29 | expense | rent   |  500000 | 월세
+TX-000001 | 2024-02-25 | income  | salary | 3000000 | 월급
+
+$ python -m budget_app recurring apply --month 2024-02
+[완료] 2024-02 반복 내역 적용 created=0, skipped=2
+  - RC-000001: 2024-02 에 이미 적용됨 (TX-000001)
+  - RC-000002: 2024-02 에 이미 적용됨 (TX-000002)
+
+$ python -m budget_app recurring remove --id RC-000002
+[삭제 완료] id=RC-000002
+
+$ python -m budget_app recurring remove --id RC-000002
+[오류] 반복 내역을 찾을 수 없습니다: RC-000002
+[힌트] python -m budget_app recurring list 로 id를 확인하세요.
+```
+
+- 입력 검증과 재입력 규약은 `add` 와 같다(매월 일은 1~31 정수).
+- 그 달에 없는 날은 **말일로 보정**한다(31일 규칙 → 2024-02-29). 생성된 거래에는 `rc:RC-000001` 태그가 자동으로 붙고, 같은 달에 그 태그가 있으면 다시 만들지 않는다. `search --tag rc:RC-000001` 로 규칙별 거래를 찾을 수 있다.
+- 규칙이 없으면 `list`/`apply` 모두 `[안내] 등록된 반복 내역이 없습니다` 를 출력하고 0으로 끝난다. 규칙의 카테고리가 삭제되었으면 그 규칙만 `  - RC-000003: 등록되지 않은 카테고리입니다: cafe` 로 건너뛴다.
+
+### 5.12 상세 로그 — `--verbose`
 
 ```text
 $ python -m budget_app --verbose list --limit 1
@@ -490,9 +542,9 @@ date,type,category,amount,memo,tags
 budget_app/
   __main__.py     진입점: python -m budget_app
   cli.py          argparse 정의, 대화형 프롬프트, 출력. 서비스만 호출
-  services.py     유스케이스(추가/검색/요약/예산/카테고리/입출력). 검증과 규칙
-  repository.py   JSONL 스트리밍 읽기(yield), append, 원자적 재작성. 3개 Store
-  models.py       dataclass Transaction/Budget/Category + 필드 검증·직렬화
+  services.py     유스케이스(추가/검색/요약/예산/카테고리/입출력/반복 내역/백업). 검증과 규칙
+  repository.py   JSONL 스트리밍 읽기(yield), append, 원자적 재작성. 4개 Store(거래·카테고리·예산·반복 규칙), 초기화·백업 복사
+  models.py       dataclass Transaction/Budget/Category/RecurringRule + 필드 검증·직렬화
   decorators.py   handle_errors / log_call / timed
   errors.py       AppError(원인, 힌트) 계층, 종료 코드 상수
   formatting.py   테이블 열 정렬(전각 폭 계산)·금액 포맷 (보너스 3)
@@ -521,22 +573,22 @@ docs/MISSION_SPEC.md  명세 원문
 | P6 | import/export CSV, 샘플 파일 | `feat: CSV 가져오기·내보내기 구현` | ✅ 완료 |
 | P7 | 보너스: 테이블 정렬, backup (반복 내역은 선택) | `feat: 테이블 출력과 백업 추가` | ✅ 완료 |
 | P8 | 마무리: README 실제 출력 반영, 전체 회귀, 상태 보고 | `docs: 실행 결과 반영과 최종 검증 기록` | ✅ 완료 |
-| 예비 | 게이트 실패 수정 1회 | `fix: ...` | 미사용 |
+| P9 (예비) | 보너스 B2: 반복 내역 등록·목록·삭제·월별 자동 생성(`recurring.jsonl`, D44). 예비 커밋을 사용자 결정으로 사용 | `feat: 반복 내역 등록과 월별 자동 생성 추가` | ✅ 완료 |
 
-커밋·푸시 누계: **9 / 10** (예비 1회 미사용). 커밋: P0 `45f7217` · P1 `3fe6aa6` · P2 `cc84686` · P3 `befac86` · P4 `bc8d4ed` · P5 `0aa3419` · P6 `e371a00` · P7 `b70f369` · P8 이 커밋.
+커밋·푸시 누계: **10 / 10** (예비 1회를 P9 에 사용). 커밋: P0 `45f7217` · P1 `3fe6aa6` · P2 `cc84686` · P3 `befac86` · P4 `bc8d4ed` · P5 `0aa3419` · P6 `e371a00` · P7 `b70f369` · P8 `5cb67bf` · P9 이 커밋.
 
 ### 9.1 알려진 한계
 
 - **id 번호 재사용 (D05)**: 다음 id 는 저장된 최대 번호 + 1 이므로, 가장 큰 번호의 거래를 삭제하면 그 번호가 다음 추가에 다시 발급된다. 유일성은 항상 지켜지지만 삭제된 id 가 "영구히 비어 있다"고 가정해서는 안 된다.
-- **반복 내역(보너스 B2) 미구현 (D43)**: 4번째 저장 파일이 필요해 헌장 C3(파일 3개)와 충돌하고 커밋 한도 안에 넣지 않았다.
+- **반복 내역은 자동 실행되지 않는다 (D44)**: `recurring apply --month` 를 사용자가 직접 실행해야 그 달의 거래가 생성된다. 중복 방지는 생성 거래의 `rc:RC-xxxxxx` 태그로 판단하므로, 그 태그를 `update --tags` 로 지우면 다시 생성될 수 있다. 규칙 id 도 D05 와 같은 재사용 한계가 있다.
 - **search 의 `--category`/`--tag` 는 등록 여부를 검사하지 않는다 (D38)**: 오타를 내면 오류 대신 0건 안내가 나온다.
 - **예산 사용률은 지출만 기준 (D17)**: 수입은 사용률 계산에 들어가지 않는다.
 - **카테고리는 대소문자를 구분한다 (D12)**: `Food` 와 `food` 는 다른 카테고리다.
 - **import 는 미등록 카테고리 행을 건너뛴다 (D19)**: 자동 생성하지 않으므로 먼저 `category add` 가 필요하다.
 - **백업은 복사본일 뿐 자동 복구는 없다 (D43)**: 손상된 줄은 `[오류] 저장 파일 {파일명} {n}행이 손상되었습니다` 로 알려 주고, 복구는 사용자가 백업 파일을 되돌려 놓는 방식이다.
 
-### 9.2 최종 검증 기록 (2026-10-18, Phase 8)
+### 9.2 최종 검증 기록 (2026-10-18, Phase 8 → P9 갱신)
 
-- 게이트: `python scripts/verify.py` → **PASS (unittest 29개, smoke 1, 3, 4, 5, 6, 7)**. unittest 는 models/repository/services/cli 4개 파일, 스모크는 실제 진입점을 subprocess 로 호출(`--help`·사용법 오류 → category/add/list → budget/summary/search → update/delete/remove → import/export 라운드트립 → 테이블 정렬/backup/`--verbose` 계약).
+- 게이트: `python scripts/verify.py` → **PASS (unittest 30개, smoke 1, 3, 4, 5, 6, 7, 9)**. unittest 는 models/repository/services/cli 4개 파일, 스모크는 실제 진입점을 subprocess 로 호출(`--help`·사용법 오류 → category/add/list → budget/summary/search → update/delete/remove → import/export 라운드트립 → 테이블 정렬/backup(4파일)/`--verbose` 계약 → recurring 등록·적용·중복 방지·말일 보정·삭제).
 - 수동 대화형 확인(유일한 수동 검증): Windows PowerShell 5.1 실제 터미널에서 `python -m budget_app --data-dir <임시폴더> add` 를 실행해 `[안내] 저장 폴더를 초기화했습니다: <임시폴더>` 와 첫 프롬프트 `날짜(YYYY-MM-DD): ` 가 각자 한 줄로 정상 표시되는 것을 확인했다. 이후 항목 입력과 `[저장 완료]` 까지의 흐름은 에이전트가 터미널에 타이핑할 수 없어 사람이 같은 탭에서 이어서 확인하도록 남겼다(subprocess 입력 주입 경로는 스모크 3 이 매 게이트마다 검증한다).
-- 5장 명령 예시는 Phase 8 에서 빈 폴더에 실제 실행한 출력이며, 문서와 실제 출력의 불일치는 0건이다.
+- 5장 명령 예시는 Phase 8(5.11 은 P9) 에서 빈 폴더에 실제 실행한 출력이며, 문서와 실제 출력의 불일치는 0건이다.

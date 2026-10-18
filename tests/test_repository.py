@@ -14,7 +14,9 @@ from budget_app.models import Budget, Transaction
 from budget_app.repository import (
     BUDGETS_FILE,
     CATEGORIES_FILE,
+    DATA_FILES,
     DEFAULT_CATEGORIES,
+    RECURRING_FILE,
     TRANSACTIONS_FILE,
     BudgetStore,
     CategoryStore,
@@ -131,13 +133,15 @@ class AtomicRewriteScenario(RepositoryTestCase):
 
 
 class InitializationScenario(RepositoryTestCase):
-    """(3) 초기화: 폴더·파일 3개 생성, 기본 카테고리 5개, 두 번째 호출은 False (D04, D23, D35)."""
+    """(3) 초기화: 폴더·파일 4개 생성, 기본 카테고리 5개, 두 번째 호출은 False (D04, D23, D35, D44)."""
 
     def test_fresh_dir_then_idempotent(self) -> None:
         data_dir = self.dir / "nested" / "data"
         self.assertTrue(ensure_initialized(data_dir))
-        for name in (TRANSACTIONS_FILE, CATEGORIES_FILE, BUDGETS_FILE):
+        self.assertEqual(DATA_FILES, (TRANSACTIONS_FILE, CATEGORIES_FILE, BUDGETS_FILE, RECURRING_FILE))
+        for name in DATA_FILES:
             self.assertTrue((data_dir / name).is_file(), name)
+        self.assertEqual(sorted(p.name for p in data_dir.iterdir()), sorted(DATA_FILES))
         categories = CategoryStore(JsonlStore(data_dir / CATEGORIES_FILE))
         self.assertEqual(categories.names(), list(DEFAULT_CATEGORIES))
         self.assertEqual(len(categories.names()), 5)
@@ -154,7 +158,7 @@ class InitializationScenario(RepositoryTestCase):
         self.assertEqual(categories.names(), ["food", "transport", "rent", "salary"])
 
     def test_existing_dir_with_empty_category_file_gets_defaults_without_notice(self) -> None:
-        for name in (TRANSACTIONS_FILE, CATEGORIES_FILE, BUDGETS_FILE):
+        for name in DATA_FILES:
             (self.dir / name).touch()
         self.assertFalse(ensure_initialized(self.dir))  # 새로 만든 것은 없다
         self.assertEqual(CategoryStore(self.store(CATEGORIES_FILE)).names(), list(DEFAULT_CATEGORIES))

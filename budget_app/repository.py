@@ -17,12 +17,22 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, TypeVar
 
 from .errors import AppError, ConflictError, NotFoundError, StorageError, ValidationError
-from .models import Budget, Category, Transaction, parse_category_name, transaction_number
+from .models import (
+    Budget,
+    Category,
+    RecurringRule,
+    Transaction,
+    format_recurring_id,
+    parse_category_name,
+    recurring_number,
+    transaction_number,
+)
 
 TRANSACTIONS_FILE = "transactions.jsonl"
 CATEGORIES_FILE = "categories.jsonl"
 BUDGETS_FILE = "budgets.jsonl"
-DATA_FILES: tuple[str, ...] = (TRANSACTIONS_FILE, CATEGORIES_FILE, BUDGETS_FILE)
+RECURRING_FILE = "recurring.jsonl"  # D44
+DATA_FILES: tuple[str, ...] = (TRANSACTIONS_FILE, CATEGORIES_FILE, BUDGETS_FILE, RECURRING_FILE)
 DEFAULT_CATEGORIES: tuple[str, ...] = ("food", "transport", "rent", "salary", "etc")  # D04
 
 ENCODING = "utf-8"
@@ -252,8 +262,50 @@ class BudgetStore:
         yield from self.store.iter_parsed(Budget.from_dict)
 
 
+class RecurringStore:
+    """반복 내역 규칙 저장소 (D44). TransactionRepository 와 같은 패턴이며 id 는 `RC-` 접두사."""
+
+    def __init__(self, store: JsonlStore) -> None:
+        self.store = store
+
+    @staticmethod
+    def _from_record(record: dict[str, Any]) -> RecurringRule:
+        rule = RecurringRule.from_dict(record)
+        recurring_number(rule.id)  # `RC-000001` 형식이 아니면 ValidationError → 손상 줄 (D33)
+        return rule
+
+    def iter_all(self) -> Iterator[RecurringRule]:
+        yield from self.store.iter_parsed(self._from_record)
+
+    def next_id(self) -> str:
+        """스트리밍으로 구한 최대 번호 + 1. 빈 파일이면 RC-000001."""
+        highest = 0
+        for rule in self.iter_all():
+            number = recurring_number(rule.id)
+            if number > highest:
+                highest = number
+        return format_recurring_id(highest + 1)
+
+    def append(self, rule: RecurringRule) -> None:
+        self.store.append(rule.to_dict())
+
+    def remove(self, rule_id: str) -> RecurringRule:
+        """해당 id 를 빼고 재작성한다. 없으면 NotFoundError. 삭제된 규칙을 돌려준다."""
+        target: RecurringRule | None = None
+        for rule in self.iter_all():
+            if rule.id == rule_id:
+                target = rule
+                break
+        if target is None:
+            raise NotFoundError(
+                f"반복 내역을 찾을 수 없습니다: {rule_id}", hint="python -m budget_app recurring list 로 id를 확인하세요."
+            )
+        self.store.rewrite(rule.to_dict() for rule in self.iter_all() if rule.id != rule_id)
+        return target
+
+
 def backup_files(data_dir: Path, target_dir: Path) -> list[Path]:
-    """저장 파일 3개를 target_dir 로 복사(shutil.copy2)하고 복사된 경로를 돌려준다 (D43). 실패는 StorageError."""
+    """저장 파일(DATA_FILES, 4개)을 target_dir 로 복사(shutil.copy2)하고 복사된 경로를 돌려준다 (D43, D44). 실패는 StorageError."""
     try:
         target_dir.mkdir(parents=True, exist_ok=False)
         copied: list[Path] = []
@@ -268,7 +320,7 @@ def backup_files(data_dir: Path, target_dir: Path) -> list[Path]:
 
 
 def ensure_initialized(data_dir: Path) -> bool:
-    """폴더와 파일 3개를 만들고, 카테고리가 0건이면 기본 카테고리를 채운다 (D04, D23, D35).
+    """폴더와 저장 파일(DATA_FILES, 4개)을 만들고, 카테고리가 0건이면 기본 카테고리를 채운다 (D04, D23, D35, D44).
 
     폴더·파일 중 하나라도 새로 만들었으면 True. 안내 출력은 호출한 cli 계층이 맡는다.
     """

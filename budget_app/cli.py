@@ -12,14 +12,15 @@ from pathlib import Path
 from typing import Callable, TypeVar
 
 from .errors import EXIT_OK, NotFoundError, ValidationError
-from .models import parse_amount, parse_date, parse_memo, parse_tags, parse_type
+from .models import parse_amount, parse_date, parse_day, parse_memo, parse_tags, parse_type
 from .formatting import (
     format_budget_table,
     format_category_row,
+    format_recurring_table,
     format_transaction_table,
     format_won,
 )
-from .services import Services, build_services
+from .services import DATA_FILE_COUNT, Services, build_services
 
 PROG = "python -m budget_app"
 DEFAULT_DATA_DIR = "./data"
@@ -181,7 +182,18 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("--to", dest="date_to", metavar="YYYY-MM-DD", help="종료일 (포함)")
     export_parser.set_defaults(check=functools.partial(_check_export, export_parser))
 
-    _subparser(commands, "backup", "타임스탬프 폴더에 저장 파일 3개를 백업")
+    _subparser(commands, "backup", "타임스탬프 폴더에 저장 파일 4개를 백업")
+
+    recurring_parser = _subparser(commands, "recurring", "반복 내역(매월 자동 생성 규칙) 관리 (보너스)")
+    recurring_commands = recurring_parser.add_subparsers(
+        dest="recurring_command", metavar="<subcommand>", required=True
+    )
+    _subparser(recurring_commands, "add", "반복 규칙 추가 (대화형: 매월 일, 타입, 카테고리, 금액, 메모, 태그)")
+    _subparser(recurring_commands, "list", "반복 규칙 목록")
+    recurring_remove = _subparser(recurring_commands, "remove", "반복 규칙 삭제")
+    recurring_remove.add_argument("--id", dest="rule_id", required=True, metavar="ID", help="삭제할 규칙 id (예: RC-000001)")
+    recurring_apply = _subparser(recurring_commands, "apply", "해당 월에 규칙대로 거래 생성 (이미 생성된 규칙은 건너뜀)")
+    recurring_apply.add_argument("--month", required=True, metavar="YYYY-MM", help="거래를 생성할 월")
 
     return parser
 
@@ -341,7 +353,47 @@ def cmd_export(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> in
 
 def cmd_backup(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
     target = svc.backup()
-    print(f"[완료] {target} (3 files)")
+    print(f"[완료] {target} ({DATA_FILE_COUNT} files)")
+    return EXIT_OK
+
+
+def cmd_recurring_add(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """대화형 6항목 → 규칙 저장 → id 출력 (D44). 검증·재입력 규약은 add 와 같다 (D37)."""
+    day = ask(input_fn, "매월 며칠(1~31): ", parse_day)
+    type_ = ask(input_fn, "타입(income/expense): ", parse_type)
+    category = ask(input_fn, "카테고리: ", svc.categories.require)
+    amount = ask(input_fn, "금액(양수 정수): ", parse_amount)
+    memo = ask(input_fn, "메모(선택): ", parse_memo)
+    tags = ask(input_fn, "태그(쉼표로 구분, 없으면 엔터): ", parse_tags)
+    rule = svc.recurring.add(day=day, type_=type_, category=category, amount=amount, memo=memo, tags=tags)
+    print(f"[저장 완료] id={rule.id}")
+    return EXIT_OK
+
+
+def cmd_recurring_list(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    rules = svc.recurring.list_all()
+    if not rules:
+        print("[안내] 등록된 반복 내역이 없습니다")
+        return EXIT_OK
+    for line in format_recurring_table(rules):
+        print(line)
+    return EXIT_OK
+
+
+def cmd_recurring_remove(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    rule = svc.recurring.remove(args.rule_id)
+    print(f"[삭제 완료] id={rule.id}")
+    return EXIT_OK
+
+
+def cmd_recurring_apply(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    result = svc.recurring.apply(args.month)
+    if result.rule_count == 0:
+        print("[안내] 등록된 반복 내역이 없습니다")
+        return EXIT_OK
+    print(f"[완료] {result.month} 반복 내역 적용 created={result.created}, skipped={len(result.skipped)}")
+    for rule_id, reason in result.skipped:
+        print(f"  - {rule_id}: {reason}")
     return EXIT_OK
 
 
@@ -360,15 +412,21 @@ HANDLERS: dict[str, Handler] = {
     "import": cmd_import,
     "export": cmd_export,
     "backup": cmd_backup,
+    "recurring add": cmd_recurring_add,
+    "recurring list": cmd_recurring_list,
+    "recurring remove": cmd_recurring_remove,
+    "recurring apply": cmd_recurring_apply,
 }
 
 
 def handler_key(args: argparse.Namespace) -> str:
-    """`budget set`, `category add` 처럼 중첩 명령은 공백으로 이어 붙인 키를 쓴다."""
+    """`budget set`, `category add`, `recurring apply` 처럼 중첩 명령은 공백으로 이어 붙인 키를 쓴다."""
     if args.command == "budget":
         return f"budget {args.budget_command}"
     if args.command == "category":
         return f"category {args.category_command}"
+    if args.command == "recurring":
+        return f"recurring {args.recurring_command}"
     return str(args.command)
 
 

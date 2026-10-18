@@ -7,7 +7,7 @@ from __future__ import annotations
 import unicodedata
 from typing import Iterable
 
-from .models import Budget, Transaction
+from .models import Budget, RecurringRule, Transaction
 
 TYPE_COLUMN_WIDTH = 7
 SEPARATOR = " | "
@@ -81,3 +81,9 @@ def format_budget_table(budgets: Iterable[Budget]) -> list[str]:
 
 def format_category_row(name: str) -> str:
     return f"- {name}"
+
+
+def format_recurring_table(rules: Iterable[RecurringRule]) -> list[str]:
+    """recurring list 출력 `id | 매월 N일 | type | category | amount | memo` (D44). 정렬 규칙은 거래 테이블과 같다."""
+    rows = [[rule.id, f"매월 {rule.day}일", rule.type, rule.category, format_amount(rule.amount), rule.memo] for rule in rules]
+    return _render(rows, ("left", "left", "left", "left", "right", "left"), (0, 0, TYPE_COLUMN_WIDTH, 0, 0, 0))
