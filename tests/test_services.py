@@ -4,10 +4,11 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from budget_app.errors import ConflictError, NotFoundError, ValidationError
+from budget_app.errors import ConflictError, NotFoundError, StorageError, ValidationError
 from budget_app.models import Budget
-from budget_app.repository import CATEGORIES_FILE, DEFAULT_CATEGORIES, JsonlStore
+from budget_app.repository import CATEGORIES_FILE, DATA_FILES, DEFAULT_CATEGORIES, JsonlStore
 from budget_app.services import Services, build_services
 
 
@@ -268,6 +269,40 @@ class CategoryRemoveScenario(ServicesTestCase):
         self.svc.categories.add("unused2")
         self.assertEqual(self.svc.categories.remove("unused2", replace="transport"), 0)  # 미사용 + replace 도 이동 0건
         self.assertEqual(self.svc.categories.list_names(), ["rent", "salary", "transport"])
+
+
+class BackupScenario(ServicesTestCase):
+    """backup: 타임스탬프 폴더에 파일 3개 복사, 같은 초 재실행은 -1/-2 접미사, 원본과 내용 동일 (B1, D43)."""
+
+    def test_backup_creates_three_files_and_never_overwrites(self) -> None:
+        self.seed_january()
+        self.svc.budgets.set_budget("2024-01", 100000)
+        with mock.patch("budget_app.services._backup_stamp", return_value="20240131-093000"):
+            first = self.svc.backup()
+            second = self.svc.backup()
+            third = self.svc.backup()
+        self.assertEqual(first, self.data_dir / "backups" / "20240131-093000")
+        self.assertEqual(second, self.data_dir / "backups" / "20240131-093000-1")
+        self.assertEqual(third, self.data_dir / "backups" / "20240131-093000-2")
+        for folder in (first, second, third):
+            self.assertEqual(sorted(p.name for p in folder.iterdir()), sorted(DATA_FILES))
+            for name in DATA_FILES:
+                self.assertEqual((folder / name).read_bytes(), (self.data_dir / name).read_bytes())
+
+        real = self.svc.backup()  # 실제 시각 스탬프 형식 YYYYMMDD-HHMMSS
+        self.assertRegex(real.name, r"^\d{8}-\d{6}(-\d+)?$")
+        self.assertEqual(len(list(real.iterdir())), 3)
+
+        # 백업 뒤 원본이 바뀌어도 백업은 그대로다 (복사본)
+        self.svc.transactions.delete("TX-000001")
+        self.assertEqual(len(list(JsonlStore(first / "transactions.jsonl").iter_records())), 5)
+        self.assertEqual(len(self.svc.transactions.list_recent(100)), 4)
+
+        # 저장 파일이 사라진 상태면 StorageError (복사 실패는 사용자 메시지로)
+        (self.data_dir / "budgets.jsonl").unlink()
+        with mock.patch("budget_app.services._backup_stamp", return_value="20240131-093001"):
+            with self.assertRaises(StorageError):
+                self.svc.backup()
 
 
 if __name__ == "__main__":

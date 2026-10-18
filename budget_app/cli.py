@@ -14,9 +14,9 @@ from typing import Callable, TypeVar
 from .errors import EXIT_OK, NotFoundError, ValidationError
 from .models import parse_amount, parse_date, parse_memo, parse_tags, parse_type
 from .formatting import (
-    format_budget_row,
+    format_budget_table,
     format_category_row,
-    format_transaction_row,
+    format_transaction_table,
     format_won,
 )
 from .services import Services, build_services
@@ -220,8 +220,8 @@ def cmd_list(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
     if not rows:
         print("[안내] 거래가 없습니다")
         return EXIT_OK
-    for tx in rows:
-        print(format_transaction_row(tx))
+    for line in format_transaction_table(rows):
+        print(line)
     return EXIT_OK
 
 
@@ -238,8 +238,8 @@ def cmd_search(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> in
     if not rows:
         print("[안내] 조건에 맞는 거래가 없습니다")
         return EXIT_OK
-    for tx in rows:
-        print(format_transaction_row(tx))
+    for line in format_transaction_table(rows):
+        print(line)
     return EXIT_OK
 
 
@@ -276,8 +276,8 @@ def cmd_budget_list(args: argparse.Namespace, svc: Services, input_fn: InputFn) 
     if not budgets:
         print("[안내] 설정된 예산이 없습니다")
         return EXIT_OK
-    for budget in budgets:
-        print(format_budget_row(budget))
+    for line in format_budget_table(budgets):
+        print(line)
     return EXIT_OK
 
 

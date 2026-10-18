@@ -8,9 +8,9 @@
 | --- | --- |
 | [docs/MISSION_SPEC.md](docs/MISSION_SPEC.md) | 과제 명세 **원문 보존** (수정 금지) |
 | `README.md` (이 문서) | 명세 심층 분석, 사용자 관점 사양(실행·저장·명령·CSV), 진행 현황 |
-| [AGENT.md](AGENT.md) | 개발 헌장, 모호성 결정표 D01~D41, 계층·계약, 9단계 커밋 계획, 검증 정책 |
+| [AGENT.md](AGENT.md) | 개발 헌장, 모호성 결정표 D01~D43, 계층·계약, 9단계 커밋 계획, 검증 정책 |
 
-진행 상태: **Phase 6 (CSV 가져오기·내보내기) 완료 — 보너스(P7) 구현 전**. 아래 "명령 예시"는 구현 목표 사양이며, Phase 8에서 실제 출력으로 갱신한다.
+진행 상태: **Phase 7 (테이블 정렬·백업) 완료 — 마무리(P8) 전**. 아래 "명령 예시"는 구현 목표 사양이며, Phase 8에서 실제 출력으로 갱신한다.
 
 ---
 
@@ -69,7 +69,7 @@
 
 ### 1.4 숨은 요구와 모순 — 반드시 결정해야 했던 지점
 
-명세를 읽는 것만으로는 구현이 갈라지는 지점이 11곳 있었다. 명세 주도 개발에서는 이런 지점을 추측하지 않고 **결정표로 고정**한다. 전체 결정은 [AGENT.md 4장](AGENT.md) D01~D41에 있고, 여기서는 왜 그 결정인지 핵심만 적는다.
+명세를 읽는 것만으로는 구현이 갈라지는 지점이 11곳 있었다. 명세 주도 개발에서는 이런 지점을 추측하지 않고 **결정표로 고정**한다. 전체 결정은 [AGENT.md 4장](AGENT.md) D01~D43에 있고, 여기서는 왜 그 결정인지 핵심만 적는다.
 
 1. **"최신순"과 "스트리밍"은 서로 당긴다.** 최신순 정렬은 원칙적으로 전체를 봐야 하지만, 명세는 전체 로드를 금지한다. 해법은 `heapq.nlargest(limit, 제너레이터)`. 파일은 한 줄씩 흐르고 메모리는 limit개만 유지한다. search는 필터를 통과한 부분집합만 정렬한다 (D07).
 2. **옵션 표기가 명세 안에서 흔들린다.** 본문에 `-limit`, `-from`, `-top`, `-data-dir`가 섞여 있지만 4장 1항이 `--` 통일을 명시한다. 마크다운 변환 손실로 판단하고 **롱 옵션만** 제공한다 (D02).
@@ -105,7 +105,7 @@ GitHub Spec Kit의 네 단계(Specify → Plan → Tasks → Implement)는 이 �
 | Spec Kit 단계 | 이 저장소 |
 | --- | --- |
 | Constitution (불변 원칙) | AGENT.md 3장 "헌장" |
-| Specify (무엇을, 왜) | docs/MISSION_SPEC.md + README 1장 분석 + `[NEEDS CLARIFICATION]` 대신 결정표 D01~D41 |
+| Specify (무엇을, 왜) | docs/MISSION_SPEC.md + README 1장 분석 + `[NEEDS CLARIFICATION]` 대신 결정표 D01~D43 |
 | Plan (어떻게) | AGENT.md 5~8장 계층·데이터 계약·CLI 계약·오류 규약 |
 | Tasks (작게 나눠 검증) | AGENT.md 9장 Phase 0~8, 각 1커밋 1푸시 1게이트 |
 | Implement | Phase 순서대로, 게이트 통과 후에만 다음 단계 |
@@ -160,7 +160,7 @@ python scripts/verify.py
 - 추가: 파일 끝에 1줄 append.
 - 수정·삭제·재배정: 같은 폴더의 임시 파일에 전체를 다시 쓴 뒤 `os.replace`로 교체한다 (원자적 교체).
 - 첫 실행: 폴더와 파일 3개를 만들고 `[안내] 저장 폴더를 초기화했습니다: ./data` 를 출력한다. 카테고리 파일이 비어 있으면 기본 카테고리 `food, transport, rent, salary, etc` 를 자동 등록한다.
-- 백업(보너스): `backup` 실행 시 `data/backups/YYYYMMDD-HHMMSS/` 아래에 3개 파일을 복사한다.
+- 백업(보너스): `backup` 실행 시 `data/backups/YYYYMMDD-HHMMSS/` 아래에 3개 파일을 복사한다. 같은 초에 다시 실행하면 `-1`, `-2` 접미사를 붙여 덮어쓰지 않는다.
 
 `data/` 는 `.gitignore` 대상이다. 저장소에는 샘플 CSV만 `samples/` 에 둔다.
 
@@ -393,8 +393,8 @@ docs/MISSION_SPEC.md  명세 원문
 | P4 | search, summary, budget set/list | `feat: 검색·월별 요약·예산 경고 구현` | ✅ 완료 |
 | P5 | update(옵션), delete, category remove(--replace) | `feat: 거래 수정·삭제와 카테고리 재배정 구현` | ✅ 완료 |
 | P6 | import/export CSV, 샘플 파일 | `feat: CSV 가져오기·내보내기 구현` | ✅ 완료 |
-| P7 | 보너스: 테이블 정렬, backup (반복 내역은 선택) | `feat: 테이블 출력과 백업 추가` | ⬜ |
+| P7 | 보너스: 테이블 정렬, backup (반복 내역은 선택) | `feat: 테이블 출력과 백업 추가` | ✅ 완료 |
 | P8 | 마무리: README 실제 출력 반영, 전체 회귀, 상태 보고 | `docs: 실행 결과 반영과 최종 검증 기록` | ⬜ |
 | 예비 | 게이트 실패 수정 1회 | `fix: ...` | — |
 
-커밋·푸시 누계: **7 / 10** (P0, P1, P2, P3, P4, P5, P6).
+커밋·푸시 누계: **8 / 10** (P0, P1, P2, P3, P4, P5, P6, P7).

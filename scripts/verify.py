@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parent.parent
-CURRENT_PHASE = 6  # 구현이 끝난 마지막 Phase. Phase 를 완료할 때마다 올린다.
+CURRENT_PHASE = 7  # 구현이 끝난 마지막 Phase. Phase 를 완료할 때마다 올린다.
 
 SmokeFn = Callable[[Path], None]
 
@@ -101,12 +101,6 @@ USAGE_ERROR_TARGETS: list[list[str]] = [
     ["import"],                           # --from 누락
 ]
 
-# 아직 구현되지 않은 명령. Phase 가 끝날 때마다 구현된 명령을 여기서 빼고 해당 Phase 스모크로 옮긴다.
-UNIMPLEMENTED_TARGETS: list[list[str]] = [
-    ["backup"],
-]
-
-
 def smoke_phase1(data_dir: Path) -> None:
     for target in HELP_TARGETS:
         proc = run_cli(data_dir, *target, "--help")
@@ -122,20 +116,14 @@ def smoke_phase1(data_dir: Path) -> None:
     expect(not data_dir.joinpath("transactions.jsonl").exists(), "--help/사용법 오류는 저장 폴더를 만들지 않습니다 (D36)")
 
 
-def check_unimplemented(data_dir: Path) -> None:
-    """남은 미구현 명령은 [오류] 두 줄 + 종료 1, stdout 비어 있음. 초기화가 끝난 폴더에서 호출한다."""
-    for target in UNIMPLEMENTED_TARGETS:
-        proc = run_cli(data_dir, *target)
-        expect(proc.returncode == 1, "미구현 명령은 종료 1 이어야 합니다", proc)
-        lines = proc.stderr.strip().splitlines()
-        expect(len(lines) == 2, "미구현 명령 오류는 정확히 두 줄이어야 합니다", proc)
-        expect(lines[0] == "[오류] 아직 구현되지 않은 명령입니다", "첫 줄은 [오류] 원인", proc)
-        expect(lines[1].startswith("[힌트] Phase "), "둘째 줄은 [힌트] Phase N", proc)
-        expect(proc.stdout == "", "미구현 명령은 stdout 에 아무것도 쓰지 않습니다", proc)
-
-    # --verbose 가 켜져도 오류 두 줄 계약은 유지되고 DEBUG 로그(log_call)는 stderr 에만 나온다.
-    proc = run_cli(data_dir, "--verbose", *UNIMPLEMENTED_TARGETS[0])
+def check_verbose_contract(data_dir: Path) -> None:
+    """--verbose 가 켜져도 오류 두 줄 계약은 유지되고 DEBUG 로그(log_call/timed)는 stderr 에만 나온다 (D22)."""
+    proc = run_cli(data_dir, "--verbose", "delete", "--id", "TX-999999")
     expect(proc.returncode == 1 and "[DEBUG]" in proc.stderr and proc.stdout == "", "--verbose 는 stderr 로그만 추가", proc)
+    lines = [line for line in proc.stderr.strip().splitlines() if not line.startswith("[DEBUG]")]
+    expect(lines == ["[오류] 거래를 찾을 수 없습니다: TX-999999", "[힌트] python -m budget_app list 로 id를 확인하세요."], "오류 두 줄 유지", proc)
+    proc = run_cli(data_dir, "--verbose", "list", "--limit", "1")
+    expect(proc.returncode == 0 and "ms)" in proc.stderr and "[DEBUG]" not in proc.stdout, "timed 로그는 stderr (D22)", proc)
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +260,7 @@ def smoke_phase4(data_dir: Path) -> None:
 
     # budget list: 월 오름차순
     proc = run_cli(data_dir, "budget", "list")
-    expect(proc.returncode == 0 and stdout_lines(proc) == ["2024-01 | 50000원", "2024-02 | 300000원"], "budget list (D25)", proc)
+    expect(proc.returncode == 0 and [cells(line) for line in stdout_lines(proc)] == [["2024-01", "50000원"], ["2024-02", "300000원"]], "budget list (D25)", proc)
 
 
 # ---------------------------------------------------------------------------
@@ -382,7 +370,47 @@ def smoke_phase6(data_dir: Path) -> None:
     expect(proc.returncode == 2 and "Traceback" not in proc.stderr, "export 조건 없음은 사용법 오류 2 (D20)", proc)
     expect_two_line_error(run_cli(first, "import", "--from", str(data_dir / "없음.csv")), f"[오류] 가져올 파일을 찾을 수 없습니다: {data_dir / '없음.csv'}", "import 파일 없음")
 
-    check_unimplemented(first)
+
+# ---------------------------------------------------------------------------
+# Phase 7 — 테이블 정렬(구분자 위치 일치, 금액 우정렬) + backup(폴더에 3개 파일, 재실행은 다른 폴더)
+# ---------------------------------------------------------------------------
+
+
+def smoke_phase7(data_dir: Path) -> None:
+    run_cli(data_dir, "list")  # 초기화 안내 소비
+    add_tx(data_dir, "2024-01-15", "expense", "food", "15000", "점심", "meal")
+    add_tx(data_dir, "2024-01-14", "income", "salary", "3000000", "월급")
+    add_tx(data_dir, "2024-01-12", "expense", "transport", "20000", "버스")
+    run_cli(data_dir, "budget", "set", "--month", "2024-01", "--amount", "100000")
+
+    # 테이블 정렬: 구분자 위치가 모든 행에서 같고, 금액은 우정렬 (ASCII 열만 있으므로 문자 인덱스로 비교 가능)
+    proc = run_cli(data_dir, "list")
+    lines = stdout_lines(proc)
+    expect(len(lines) == 3 and len({tuple(i for i in range(len(l)) if l.startswith(" | ", i)) for l in lines}) == 1, "list 구분자 위치 일치 (D42)", proc)
+    raw = [line.split(" | ") for line in lines]
+    expect(raw[0][4] == "  15000" and raw[1][4] == "3000000" and raw[2][4] == "  20000", "amount 우정렬", proc)
+    expect(raw[1][2] == "income " and raw[0][3] == "food     ", "type·category 좌정렬", proc)
+    expect(lines[0].endswith("| 점심") and all(not line.endswith(" ") for line in lines), "memo 는 패딩 없음", proc)
+    proc = run_cli(data_dir, "budget", "set", "--month", "2024-02", "--amount", "5000")
+    proc = run_cli(data_dir, "budget", "list")
+    expect(stdout_lines(proc) == ["2024-01 | 100000원", "2024-02 |   5000원"], "budget list 금액 우정렬 (D42)", proc)
+
+    # backup: 폴더 1개에 파일 3개, 내용 동일, 재실행은 다른 폴더(같은 초면 -1 접미사)
+    proc = run_cli(data_dir, "backup")
+    expect(proc.returncode == 0 and len(stdout_lines(proc)) == 1, "backup 종료 0, 한 줄 출력", proc)
+    line = stdout_lines(proc)[0]
+    expect(line.startswith("[완료] ") and line.endswith(" (3 files)"), "backup 출력 형식 (README 5.10)", proc)
+    target = Path(line[len("[완료] "):-len(" (3 files)")])
+    expect(target.parent == data_dir / "backups" and target.is_dir(), "backups/{스탬프} 폴더", proc)
+    expect(sorted(p.name for p in target.iterdir()) == ["budgets.jsonl", "categories.jsonl", "transactions.jsonl"], "백업 파일 3개", proc)
+    for name in ("transactions.jsonl", "categories.jsonl", "budgets.jsonl"):
+        expect((target / name).read_bytes() == (data_dir / name).read_bytes(), f"백업 {name} 내용 동일")
+    proc = run_cli(data_dir, "backup")
+    second = Path(stdout_lines(proc)[0][len("[완료] "):-len(" (3 files)")])
+    expect(second != target and second.is_dir() and len(list(second.iterdir())) == 3, "재실행은 다른 폴더 (D43)", proc)
+    expect(len(list((data_dir / "backups").iterdir())) == 2, "backups 폴더에 2개")
+
+    check_verbose_contract(data_dir)
 
 
 SMOKES: dict[int, SmokeFn] = {
@@ -391,7 +419,7 @@ SMOKES: dict[int, SmokeFn] = {
     4: smoke_phase4,
     5: smoke_phase5,
     6: smoke_phase6,
-    # 7: backup
+    7: smoke_phase7,
 }
 
 

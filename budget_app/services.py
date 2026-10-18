@@ -4,7 +4,7 @@ P3: CategoryService.list_names/add/require, TransactionService.add/list_recent, 
 P4: TransactionService.search(D28, D38), BudgetService.set_budget/list_all/summary(D16, D17, D25, D39).
 P5: TransactionService.update/delete, CategoryService.remove(D03, D18, D40). 재작성은 명령당 최대 1회.
 P6: TransactionService.import_csv/export_csv(D19, D20, D41). CSV 는 교환 포맷이며 저장 포맷은 JSONL 그대로다.
-P7 메서드(backup)는 "아직 구현되지 않은 명령입니다" 오류로 끝난다. argparse·print·input 은 여기서 쓰지 않는다.
+P7: Services.backup(D43). 모든 명령이 구현되어 not_implemented 는 더 쓰지 않는다. argparse·print·input 은 여기서 쓰지 않는다.
 """
 from __future__ import annotations
 
@@ -12,11 +12,12 @@ import csv
 import heapq
 from dataclasses import dataclass, field
 from dataclasses import replace as replace_fields
+from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
 from .decorators import log_call, timed
-from .errors import AppError, ConflictError, NotFoundError, StorageError, ValidationError, not_implemented
+from .errors import AppError, ConflictError, NotFoundError, StorageError, ValidationError
 from .models import (
     TYPE_EXPENSE,
     TYPE_INCOME,
@@ -40,6 +41,7 @@ from .repository import (
     CategoryStore,
     JsonlStore,
     TransactionRepository,
+    backup_files,
     ensure_initialized,
 )
 
@@ -66,6 +68,14 @@ class MonthlySummary:
     @property
     def balance(self) -> int:
         return self.income - self.expense
+
+
+BACKUP_DIR_NAME = "backups"  # D43
+
+
+def _backup_stamp() -> str:
+    """백업 폴더 이름 `YYYYMMDD-HHMMSS` (로컬 시간)."""
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
 CSV_COLUMNS: tuple[str, ...] = ("date", "type", "category", "amount", "memo", "tags")  # README 6장, D20
@@ -428,8 +438,19 @@ class Services:
 
     @log_call
     def backup(self) -> Path:
-        """`data/backups/{YYYYMMDD-HHMMSS}/` 에 3개 파일을 복사하고 그 경로를 돌려준다 (B1)."""
-        raise not_implemented(7)
+        """`{data_dir}/backups/{YYYYMMDD-HHMMSS}/` 에 3개 파일을 복사하고 그 경로를 돌려준다 (B1, D43).
+
+        같은 초에 다시 실행해 폴더가 이미 있으면 `-1`, `-2`, … 를 붙여 덮어쓰지 않는다.
+        """
+        root = self.data_dir / BACKUP_DIR_NAME
+        stamp = _backup_stamp()
+        target = root / stamp
+        suffix = 0
+        while target.exists():
+            suffix += 1
+            target = root / f"{stamp}-{suffix}"
+        backup_files(self.data_dir, target)
+        return target
 
 
 def build_services(data_dir: Path) -> Services:

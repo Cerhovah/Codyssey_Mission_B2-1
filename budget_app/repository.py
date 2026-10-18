@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, TypeVar
@@ -249,6 +250,21 @@ class BudgetStore:
     def iter_all(self) -> Iterator[Budget]:
         """파일 순서대로 yield 한다. 월 오름차순 정렬은 서비스가 한다."""
         yield from self.store.iter_parsed(Budget.from_dict)
+
+
+def backup_files(data_dir: Path, target_dir: Path) -> list[Path]:
+    """저장 파일 3개를 target_dir 로 복사(shutil.copy2)하고 복사된 경로를 돌려준다 (D43). 실패는 StorageError."""
+    try:
+        target_dir.mkdir(parents=True, exist_ok=False)
+        copied: list[Path] = []
+        for name in DATA_FILES:
+            copied.append(Path(shutil.copy2(data_dir / name, target_dir / name)))
+        return copied
+    except OSError as exc:
+        raise StorageError(
+            f"백업을 만들 수 없습니다: {target_dir} ({exc.strerror or type(exc).__name__})",
+            hint="저장 폴더에 파일 3개가 있는지와 쓰기 권한을 확인하세요",
+        ) from None
 
 
 def ensure_initialized(data_dir: Path) -> bool:
