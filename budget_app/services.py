@@ -1,23 +1,28 @@
 """유스케이스 계층 (AGENT.md 5장). 검증 조합, id 발급, 집계, 재배정. 저장소만 호출한다.
 
 P3: CategoryService.list_names/add/require, TransactionService.add/list_recent, build_services 의 초기화 연결(D36).
-P4 이후 메서드는 "아직 구현되지 않은 명령입니다" 오류로 끝난다. argparse·print·input 은 여기서 쓰지 않는다.
+P4: TransactionService.search(D28, D38), BudgetService.set_budget/list_all/summary(D16, D17, D25, D39).
+P5 이후 메서드는 "아직 구현되지 않은 명령입니다" 오류로 끝난다. argparse·print·input 은 여기서 쓰지 않는다.
 """
 from __future__ import annotations
 
 import heapq
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterator
 
 from .decorators import log_call, timed
-from .errors import NotFoundError, not_implemented
+from .errors import NotFoundError, ValidationError, not_implemented
 from .models import (
+    TYPE_EXPENSE,
+    TYPE_INCOME,
     Budget,
     Transaction,
     parse_amount,
     parse_category_name,
     parse_date,
     parse_memo,
+    parse_month,
     parse_tags,
     parse_type,
 )
@@ -55,6 +60,11 @@ class MonthlySummary:
     @property
     def balance(self) -> int:
         return self.income - self.expense
+
+
+def _given(value: str | None) -> bool:
+    """옵션이 주어졌고 strip 결과가 비어 있지 않으면 True. 빈 문자열은 "조건 없음" (D38)."""
+    return value is not None and value.strip() != ""
 
 
 def require_category(categories: CategoryStore, name: str) -> str:
@@ -145,7 +155,37 @@ class TransactionService:
         tag: str | None = None,
         limit: int | None = None,
     ) -> list[Transaction]:
-        raise not_implemented(4)
+        """모든 조건 AND. 제너레이터로 걸러 통과분만 (date, id) 내림차순 정렬한다 (D07, D28, D38)."""
+        start = parse_date(date_from) if _given(date_from) else None
+        end = parse_date(date_to) if _given(date_to) else None
+        if start is not None and end is not None and start > end:
+            raise ValidationError(
+                f"시작일이 종료일보다 늦습니다 (--from {start}, --to {end})", hint="--from 은 --to 보다 같거나 빨라야 합니다"
+            )
+        wanted_type = parse_type(type_) if _given(type_) else None
+        wanted_category = category.strip() if _given(category) else None
+        wanted_tag = tag.strip() if _given(tag) else None
+        needle = query.strip().casefold() if _given(query) else None
+
+        def matches(tx: Transaction) -> bool:
+            if start is not None and tx.date < start:
+                return False
+            if end is not None and tx.date > end:
+                return False
+            if wanted_type is not None and tx.type != wanted_type:
+                return False
+            if wanted_category is not None and tx.category != wanted_category:
+                return False
+            if wanted_tag is not None and wanted_tag not in tx.tags:
+                return False
+            if needle is not None and needle not in tx.memo.casefold():
+                return False
+            return True
+
+        passed: Iterator[Transaction] = (tx for tx in self.transactions.iter_all() if matches(tx))
+        if limit is not None:
+            return heapq.nlargest(limit, passed, key=Transaction.sort_key)
+        return sorted(passed, key=Transaction.sort_key, reverse=True)
 
     @log_call
     def update(
@@ -191,17 +231,41 @@ class BudgetService:
 
     @log_call
     def set_budget(self, month: str, amount: str | int) -> Budget:
-        raise not_implemented(4)
+        """월·금액을 검증하고 같은 달은 덮어쓴다 (D08, D25)."""
+        budget = Budget(month=parse_month(month), amount=parse_amount(amount))
+        self.budgets.set(budget)
+        return budget
 
     @log_call
     def list_all(self) -> list[Budget]:
         """월 오름차순 (D25)."""
-        raise not_implemented(4)
+        return sorted(self.budgets.iter_all(), key=lambda budget: budget.month)
 
     @log_call
     @timed
     def summary(self, month: str, top: int) -> MonthlySummary:
-        raise not_implemented(4)
+        """한 번의 순회로 해당 월의 수입·지출·건수·카테고리별 지출을 집계한다 (D16, D17, D39)."""
+        target = parse_month(month)
+        income = expense = count = 0
+        by_category: dict[str, int] = {}
+        for tx in self.transactions.iter_all():
+            if tx.date[:7] != target:
+                continue
+            count += 1
+            if tx.type == TYPE_INCOME:
+                income += tx.amount
+            elif tx.type == TYPE_EXPENSE:
+                expense += tx.amount
+                by_category[tx.category] = by_category.get(tx.category, 0) + tx.amount
+        ranked = sorted(by_category.items(), key=lambda item: (-item[1], item[0]))[:top]
+        return MonthlySummary(
+            month=target,
+            income=income,
+            expense=expense,
+            budget=self.budgets.get(target),
+            top_expenses=ranked,
+            count=count,
+        )
 
 
 @dataclass(slots=True)

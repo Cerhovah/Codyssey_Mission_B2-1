@@ -1,4 +1,4 @@
-"""services 계층 테스트: 카테고리 관리, 거래 추가, 최신순 목록을 시나리오 단위로 확인한다 (AGENT.md 9장 P3, 10장)."""
+"""services 계층 테스트: 카테고리·거래 추가·목록(P3), 검색·월별 요약·예산(P4)을 시나리오 단위로 확인한다 (AGENT.md 10장)."""
 from __future__ import annotations
 
 import tempfile
@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from budget_app.errors import ConflictError, NotFoundError, ValidationError
+from budget_app.models import Budget
 from budget_app.repository import CATEGORIES_FILE, DEFAULT_CATEGORIES, JsonlStore
 from budget_app.services import Services, build_services
 
@@ -17,8 +18,21 @@ class ServicesTestCase(unittest.TestCase):
         self.data_dir = Path(self._tmp.name) / "data"
         self.svc: Services = build_services(self.data_dir)
 
-    def add(self, date: str, type_: str = "expense", category: str = "food", amount: int = 1000) -> str:
-        return self.svc.transactions.add(date=date, type_=type_, category=category, amount=amount).id
+    def add(
+        self, date: str, type_: str = "expense", category: str = "food", amount: int = 1000,
+        memo: str = "", tags: str = "",
+    ) -> str:
+        return self.svc.transactions.add(
+            date=date, type_=type_, category=category, amount=amount, memo=memo, tags=tags
+        ).id
+
+    def seed_january(self) -> None:
+        """2024-01 수입 1건·지출 3건(food 2, transport 1) + 2023-12 지출 1건."""
+        self.add("2024-01-14", "income", "salary", 3000000, memo="월급")                 # TX-000001
+        self.add("2024-01-15", "expense", "food", 15000, memo="점심", tags="meal")        # TX-000002
+        self.add("2024-01-20", "expense", "food", 30000, memo="저녁 Dinner", tags="meal,family")  # TX-000003
+        self.add("2024-01-12", "expense", "transport", 20000, memo="버스")               # TX-000004
+        self.add("2023-12-31", "expense", "rent", 500000, memo="12월 월세")              # TX-000005
 
 
 class BuildAndCategoryScenario(ServicesTestCase):
@@ -94,6 +108,77 @@ class ListRecentScenario(ServicesTestCase):
         self.assertEqual(recent, ["TX-000003", "TX-000001", "TX-000002", "TX-000004"])
         self.assertEqual([tx.id for tx in self.svc.transactions.list_recent(2)], ["TX-000003", "TX-000001"])
         self.assertEqual([tx.id for tx in self.svc.transactions.list_recent(1)], ["TX-000003"])
+
+
+class SearchScenario(ServicesTestCase):
+    """search: 조건 AND, 최신순 정렬, limit, 날짜 검증 (D28, D38)."""
+
+    def ids(self, **kwargs: object) -> list[str]:
+        return [tx.id for tx in self.svc.transactions.search(**kwargs)]  # type: ignore[arg-type]
+
+    def test_conditions_sorting_and_limit(self) -> None:
+        self.seed_january()
+        self.assertEqual(self.ids(), ["TX-000003", "TX-000002", "TX-000001", "TX-000004", "TX-000005"])  # 조건 없음 = 전체 최신순
+        self.assertEqual(self.ids(type_=" Income "), ["TX-000001"])
+        self.assertEqual(self.ids(category="food"), ["TX-000003", "TX-000002"])
+        self.assertEqual(self.ids(category="Food"), [])          # 정확 일치, 미등록이어도 오류 없이 0건
+        self.assertEqual(self.ids(query="dinner"), ["TX-000003"])  # 메모 부분 일치, 대소문자 무시
+        self.assertEqual(self.ids(query="월"), ["TX-000001", "TX-000005"])
+        self.assertEqual(self.ids(tag="meal"), ["TX-000003", "TX-000002"])
+        self.assertEqual(self.ids(tag="mea"), [])                 # 태그는 정확 일치
+        self.assertEqual(self.ids(date_from="2024-01-13", date_to="2024-01-15"), ["TX-000002", "TX-000001"])  # 포함 범위
+        self.assertEqual(self.ids(date_from="2024-01-15"), ["TX-000003", "TX-000002"])
+        self.assertEqual(self.ids(date_to="2023-12-31"), ["TX-000005"])
+        self.assertEqual(self.ids(category="food", tag="family", query="저녁"), ["TX-000003"])  # AND
+        self.assertEqual(self.ids(category="food", type_="income"), [])
+        self.assertEqual(self.ids(limit=2), ["TX-000003", "TX-000002"])
+        self.assertEqual(self.ids(category="food", limit=1), ["TX-000003"])
+        self.assertEqual(self.ids(query="   ", tag=""), self.ids())  # 빈 조건은 조건 없음
+
+        for bad in (dict(date_from="2024-1-5"), dict(date_to="어제"), dict(type_="transfer"),
+                    dict(date_from="2024-01-20", date_to="2024-01-10")):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValidationError):
+                    self.svc.transactions.search(**bad)  # type: ignore[arg-type]
+
+
+class SummaryAndBudgetScenario(ServicesTestCase):
+    """summary 집계·TOP·데이터 없음·예산, budget 덮어쓰기·정렬 (D16, D17, D25, D39)."""
+
+    def test_summary_and_budget(self) -> None:
+        empty = self.svc.budgets.summary("2024-01", 5)
+        self.assertEqual((empty.count, empty.income, empty.expense, empty.budget, empty.top_expenses), (0, 0, 0, None, []))
+
+        self.seed_january()
+        result = self.svc.budgets.summary(" 2024-01 ", 2)
+        self.assertEqual((result.month, result.count), ("2024-01", 4))
+        self.assertEqual((result.income, result.expense, result.balance), (3000000, 65000, 2935000))
+        self.assertEqual(result.top_expenses, [("food", 45000), ("transport", 20000)])
+        self.assertIsNone(result.budget)
+        self.assertEqual(self.svc.budgets.summary("2024-01", 1).top_expenses, [("food", 45000)])
+
+        # 같은 금액은 이름 오름차순, 수입만 있는 달은 TOP 이 비어 있다
+        self.add("2024-03-01", "expense", "transport", 7000)
+        self.add("2024-03-02", "expense", "etc", 7000)
+        self.assertEqual(self.svc.budgets.summary("2024-03", 5).top_expenses, [("etc", 7000), ("transport", 7000)])
+        self.add("2024-04-01", "income", "salary", 10)
+        april = self.svc.budgets.summary("2024-04", 5)
+        self.assertEqual((april.count, april.income, april.top_expenses), (1, 10, []))
+
+        # 예산: 검증, 덮어쓰기, 월 오름차순, summary 에 실림
+        self.assertEqual(self.svc.budgets.list_all(), [])
+        self.assertEqual(self.svc.budgets.set_budget("2024-02", "300000"), Budget("2024-02", 300000))
+        self.assertEqual(self.svc.budgets.set_budget("2024-01", 100000), Budget("2024-01", 100000))
+        self.assertEqual(self.svc.budgets.set_budget("2024-01", "50000"), Budget("2024-01", 50000))  # 덮어쓰기
+        self.assertEqual(self.svc.budgets.list_all(), [Budget("2024-01", 50000), Budget("2024-02", 300000)])
+        self.assertEqual(self.svc.budgets.summary("2024-01", 5).budget, Budget("2024-01", 50000))
+        self.assertEqual(self.svc.budgets.summary("2024-02", 5).budget, Budget("2024-02", 300000))  # 데이터 없음 + 예산
+        for month, amount in (("2024-13", 1), ("2024-1", 1), ("2024-01", "0"), ("2024-01", "1,000")):
+            with self.subTest(month=month, amount=amount):
+                with self.assertRaises(ValidationError):
+                    self.svc.budgets.set_budget(month, amount)
+        with self.assertRaises(ValidationError):
+            self.svc.budgets.summary("2024/01", 5)
 
 
 if __name__ == "__main__":

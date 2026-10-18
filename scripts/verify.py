@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parent.parent
-CURRENT_PHASE = 3  # 구현이 끝난 마지막 Phase. Phase 를 완료할 때마다 올린다.
+CURRENT_PHASE = 4  # 구현이 끝난 마지막 Phase. Phase 를 완료할 때마다 올린다.
 
 SmokeFn = Callable[[Path], None]
 
@@ -103,10 +103,6 @@ USAGE_ERROR_TARGETS: list[list[str]] = [
 
 # 아직 구현되지 않은 명령. Phase 가 끝날 때마다 구현된 명령을 여기서 빼고 해당 Phase 스모크로 옮긴다.
 UNIMPLEMENTED_TARGETS: list[list[str]] = [
-    ["search", "--category", "food"],
-    ["summary", "--month", "2024-01"],
-    ["budget", "set", "--month", "2024-01", "--amount", "500000"],
-    ["budget", "list"],
     ["category", "remove", "--name", "food"],
     ["update", "--id", "TX-000001", "--amount", "1"],
     ["delete", "--id", "TX-000001"],
@@ -208,13 +204,89 @@ def smoke_phase3(data_dir: Path) -> None:
     expect([r[0] for r in rows] == ["TX-000003", "TX-000001", "TX-000002"], "list 기본 limit 20 으로 전체 최신순", proc)
     expect(rows[2][:5] == ["TX-000002", "2024-01-14", "income", "salary", "3000000"], "income 행", proc)
 
+
+# ---------------------------------------------------------------------------
+# Phase 4 — budget set/list, summary(집계·TOP·예산·경고·데이터 없음), search(조건별 건수)
+# ---------------------------------------------------------------------------
+
+
+def add_tx(data_dir: Path, date: str, type_: str, category: str, amount: str, memo: str = "", tags: str = "") -> None:
+    proc = run_cli(data_dir, "add", input_text=f"{date}\n{type_}\n{category}\n{amount}\n{memo}\n{tags}\n")
+    expect(proc.returncode == 0 and "[저장 완료] id=" in proc.stdout, "스모크 데이터 add", proc)
+
+
+def smoke_phase4(data_dir: Path) -> None:
+    run_cli(data_dir, "list")  # 초기화 안내 소비
+    add_tx(data_dir, "2024-01-14", "income", "salary", "3000000", "월급")
+    add_tx(data_dir, "2024-01-15", "expense", "food", "15000", "점심", "meal")
+    add_tx(data_dir, "2024-01-20", "expense", "food", "30000", "저녁 Dinner", "meal,family")
+    add_tx(data_dir, "2024-01-12", "expense", "transport", "20000", "버스")
+
+    # budget set → summary: 총액, 예산 사용률, TOP 2 순서
+    proc = run_cli(data_dir, "budget", "set", "--month", "2024-01", "--amount", "100000")
+    expect(proc.returncode == 0 and stdout_lines(proc) == ["[저장 완료] 2024-01 예산 100000원"], "budget set", proc)
+    proc = run_cli(data_dir, "summary", "--month", "2024-01", "--top", "2")
+    expect(proc.returncode == 0, "summary 종료 0", proc)
+    expect(
+        stdout_lines(proc) == [
+            "총 수입: 3000000원", "총 지출: 65000원", "잔액: 2935000원", "예산: 100000원 (사용률 65.0%)",
+            "지출 TOP 2", "1) food 45000원", "2) transport 20000원",
+        ],
+        "summary 출력 (README 5.4)", proc,
+    )
+    expect("[경고]" not in proc.stdout, "예산 이내면 경고 없음", proc)
+
+    # 예산을 지출보다 작게 다시 set → 덮어쓰기 + [경고] 초과
+    proc = run_cli(data_dir, "budget", "set", "--month", "2024-01", "--amount", "50000")
+    expect(proc.returncode == 0, "budget set 덮어쓰기", proc)
+    proc = run_cli(data_dir, "summary", "--month", "2024-01")
+    lines = stdout_lines(proc)
+    expect(proc.returncode == 0 and "예산: 50000원 (사용률 130.0%)" in lines, "덮어쓴 예산으로 사용률 계산 (D17)", proc)
+    expect(lines[lines.index("예산: 50000원 (사용률 130.0%)") + 1] == "[경고] 예산 초과: +15000원", "경고 줄은 예산 줄 바로 다음", proc)
+    expect("지출 TOP 5" in lines and lines[-1] == "2) transport 20000원", "--top 기본값 5 (D27)", proc)
+
+    # 데이터 없는 달: 안내만, 예산이 있으면 예산 줄 한 개 추가 (D16)
+    proc = run_cli(data_dir, "summary", "--month", "2024-02")
+    expect(proc.returncode == 0 and stdout_lines(proc) == ["[안내] 2024-02 데이터 없음"], "데이터 없음", proc)
+    run_cli(data_dir, "budget", "set", "--month", "2024-02", "--amount", "300000")
+    proc = run_cli(data_dir, "summary", "--month", "2024-02")
+    expect(stdout_lines(proc) == ["[안내] 2024-02 데이터 없음", "예산: 300000원 (사용률 0.0%)"], "데이터 없음 + 예산 줄", proc)
+    for target in (["summary", "--month", "2024-13"], ["budget", "set", "--month", "2024-01", "--amount", "1,000"]):
+        proc = run_cli(data_dir, *target)
+        expect(proc.returncode == 1 and proc.stderr.startswith("[오류]") and proc.stdout == "", "월·금액 검증 실패는 종료 1 (D32)", proc)
+
+    # search: 조건별 건수와 최신순
+    def search_ids(*argv: str) -> list[str]:
+        proc = run_cli(data_dir, "search", *argv)
+        expect(proc.returncode == 0, "search 종료 0", proc)
+        return [cells(line)[0] for line in stdout_lines(proc) if not line.startswith("[안내]")]
+
+    expect(search_ids("--type", "income") == ["TX-000001"], "--type")
+    expect(search_ids("--category", "food") == ["TX-000003", "TX-000002"], "--category 최신순")
+    expect(search_ids("--q", "dinner") == ["TX-000003"], "--q 대소문자 무시 부분 일치")
+    expect(search_ids("--tag", "meal") == ["TX-000003", "TX-000002"], "--tag 정확 일치")
+    expect(search_ids("--from", "2024-01-13", "--to", "2024-01-15") == ["TX-000002", "TX-000001"], "--from/--to 포함 범위")
+    expect(search_ids("--from", "2024-01-15", "--limit", "1") == ["TX-000003"], "--limit")
+    expect(search_ids("--category", "food", "--type", "income") == [], "AND 조건 0건은 안내만")
+    proc = run_cli(data_dir, "search", "--tag", "없는태그")
+    expect(proc.returncode == 0 and stdout_lines(proc) == ["[안내] 조건에 맞는 거래가 없습니다"], "0건 안내 (D28)", proc)
+    proc = run_cli(data_dir, "search", "--from", "2024-1-5")
+    expect(proc.returncode == 1 and proc.stderr.startswith("[오류] 날짜 형식"), "날짜 형식 오류는 종료 1", proc)
+    proc = run_cli(data_dir, "search", "--limit", "0")
+    expect(proc.returncode == 2, "--limit 0 은 사용법 오류 2 (D32)", proc)
+
+    # budget list: 월 오름차순
+    proc = run_cli(data_dir, "budget", "list")
+    expect(proc.returncode == 0 and stdout_lines(proc) == ["2024-01 | 50000원", "2024-02 | 300000원"], "budget list (D25)", proc)
+
     check_unimplemented(data_dir)
 
 
 SMOKES: dict[int, SmokeFn] = {
     1: smoke_phase1,
     3: smoke_phase3,
-    # 4: search/summary/budget, 5: update/delete/remove, 6: import/export, 7: backup
+    4: smoke_phase4,
+    # 5: update/delete/remove, 6: import/export, 7: backup
 }
 
 
