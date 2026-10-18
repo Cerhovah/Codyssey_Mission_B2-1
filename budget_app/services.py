@@ -2,17 +2,19 @@
 
 P3: CategoryService.list_names/add/require, TransactionService.add/list_recent, build_services 의 초기화 연결(D36).
 P4: TransactionService.search(D28, D38), BudgetService.set_budget/list_all/summary(D16, D17, D25, D39).
-P5 이후 메서드는 "아직 구현되지 않은 명령입니다" 오류로 끝난다. argparse·print·input 은 여기서 쓰지 않는다.
+P5: TransactionService.update/delete, CategoryService.remove(D03, D18, D40). 재작성은 명령당 최대 1회.
+P6 이후 메서드는 "아직 구현되지 않은 명령입니다" 오류로 끝난다. argparse·print·input 은 여기서 쓰지 않는다.
 """
 from __future__ import annotations
 
 import heapq
 from dataclasses import dataclass, field
+from dataclasses import replace as replace_fields
 from pathlib import Path
 from typing import Iterator
 
 from .decorators import log_call, timed
-from .errors import NotFoundError, ValidationError, not_implemented
+from .errors import ConflictError, NotFoundError, ValidationError, not_implemented
 from .models import (
     TYPE_EXPENSE,
     TYPE_INCOME,
@@ -25,6 +27,7 @@ from .models import (
     parse_month,
     parse_tags,
     parse_type,
+    transaction_number,
 )
 from .repository import (
     BUDGETS_FILE,
@@ -67,6 +70,16 @@ def _given(value: str | None) -> bool:
     return value is not None and value.strip() != ""
 
 
+def find_transaction(transactions: TransactionRepository, tx_id: str) -> Transaction:
+    """id 형식을 검증하고 스트리밍으로 첫 일치를 찾는다. 없으면 NotFoundError (D40)."""
+    clean = tx_id.strip()
+    transaction_number(clean)
+    for tx in transactions.iter_all():
+        if tx.id == clean:
+            return tx
+    raise NotFoundError(f"거래를 찾을 수 없습니다: {clean}", hint="python -m budget_app list 로 id를 확인하세요.")
+
+
 def require_category(categories: CategoryStore, name: str) -> str:
     """이름을 정규화하고 등록 여부를 확인한다. 없으면 등록 목록을 힌트로 담은 NotFoundError (D37)."""
     clean = parse_category_name(name)
@@ -103,8 +116,32 @@ class CategoryService:
 
     @log_call
     def remove(self, name: str, replace: str | None = None) -> int:
-        """삭제하고 재배정한 거래 건수를 돌려준다 (D18)."""
-        raise not_implemented(5)
+        """삭제하고 재배정한 거래 건수를 돌려준다 (D18, D40). 사용 중이면 --replace 없이는 차단한다."""
+        clean = parse_category_name(name)
+        if not self.categories.exists(clean):
+            raise NotFoundError(
+                f"카테고리를 찾을 수 없습니다: {clean}", hint="python -m budget_app category list 로 목록을 확인하세요"
+            )
+        target: str | None = None
+        if replace is not None:
+            target = require_category(self.categories, replace)
+            if target == clean:
+                raise ValidationError(
+                    f"대체 카테고리가 삭제 대상과 같습니다: {clean}", hint="--replace 에는 다른 카테고리를 지정하세요"
+                )
+        in_use = sum(1 for tx in self.transactions.iter_all() if tx.category == clean)
+        if in_use and target is None:
+            raise ConflictError(
+                f"'{clean}'를 사용하는 거래가 {in_use}건 있어 삭제할 수 없습니다.",
+                hint="--replace <대체카테고리> 를 지정하면 해당 거래를 옮긴 뒤 삭제합니다.",
+            )
+        if in_use:
+            self.transactions.rewrite(
+                replace_fields(tx, category=target) if tx.category == clean else tx
+                for tx in self.transactions.iter_all()
+            )
+        self.categories.remove(clean)
+        return in_use
 
 
 class TransactionService:
@@ -199,11 +236,34 @@ class TransactionService:
         memo: str | None = None,
         tags: str | None = None,
     ) -> Transaction:
-        raise not_implemented(5)
+        """주어진 옵션만 바꾼다. 값 검증 → 대상 존재 확인 → 원자적 재작성 1회 (D03, D21, D40)."""
+        changes: dict[str, object] = {}
+        if date is not None:
+            changes["date"] = parse_date(date)
+        if type_ is not None:
+            changes["type"] = parse_type(type_)
+        if category is not None:
+            changes["category"] = require_category(self.categories, category)
+        if amount is not None:
+            changes["amount"] = parse_amount(amount)
+        if memo is not None:
+            changes["memo"] = parse_memo(memo)
+        if tags is not None:
+            changes["tags"] = parse_tags(tags)
+        if not changes:
+            raise ValidationError("수정할 항목이 없습니다", hint="--date --type --category --amount --memo --tags 중 하나 이상")
+
+        current = find_transaction(self.transactions, tx_id)
+        updated = replace_fields(current, **changes)  # type: ignore[arg-type]
+        self.transactions.rewrite(updated if tx.id == updated.id else tx for tx in self.transactions.iter_all())
+        return updated
 
     @log_call
     def delete(self, tx_id: str) -> Transaction:
-        raise not_implemented(5)
+        """대상 존재 확인 → 그 거래만 빼고 원자적 재작성 1회 (D21, D40)."""
+        target = find_transaction(self.transactions, tx_id)
+        self.transactions.rewrite(tx for tx in self.transactions.iter_all() if tx.id != target.id)
+        return target
 
     @log_call
     @timed

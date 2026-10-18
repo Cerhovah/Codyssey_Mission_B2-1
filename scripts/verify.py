@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parent.parent
-CURRENT_PHASE = 4  # 구현이 끝난 마지막 Phase. Phase 를 완료할 때마다 올린다.
+CURRENT_PHASE = 5  # 구현이 끝난 마지막 Phase. Phase 를 완료할 때마다 올린다.
 
 SmokeFn = Callable[[Path], None]
 
@@ -103,9 +103,6 @@ USAGE_ERROR_TARGETS: list[list[str]] = [
 
 # 아직 구현되지 않은 명령. Phase 가 끝날 때마다 구현된 명령을 여기서 빼고 해당 Phase 스모크로 옮긴다.
 UNIMPLEMENTED_TARGETS: list[list[str]] = [
-    ["category", "remove", "--name", "food"],
-    ["update", "--id", "TX-000001", "--amount", "1"],
-    ["delete", "--id", "TX-000001"],
     ["import", "--from", "x.csv"],
     ["export", "--out", "x.csv", "--month", "2024-01"],
     ["backup"],
@@ -279,6 +276,73 @@ def smoke_phase4(data_dir: Path) -> None:
     proc = run_cli(data_dir, "budget", "list")
     expect(proc.returncode == 0 and stdout_lines(proc) == ["2024-01 | 50000원", "2024-02 | 300000원"], "budget list (D25)", proc)
 
+
+# ---------------------------------------------------------------------------
+# Phase 5 — update(옵션 기반), delete, category remove(차단 / --replace 재배정)
+# ---------------------------------------------------------------------------
+
+
+def expect_two_line_error(proc: subprocess.CompletedProcess[str], first_line: str, label: str) -> None:
+    lines = proc.stderr.strip().splitlines()
+    expect(proc.returncode == 1 and proc.stdout == "", f"{label}: 종료 1, stdout 비어 있음", proc)
+    expect(len(lines) == 2 and lines[0] == first_line and lines[1].startswith("[힌트] "), f"{label}: [오류]/[힌트] 두 줄", proc)
+    expect("Traceback" not in proc.stderr, "스택트레이스가 출력되면 안 됩니다", proc)
+
+
+def list_rows(data_dir: Path) -> list[list[str]]:
+    proc = run_cli(data_dir, "list")
+    expect(proc.returncode == 0, "list 종료 0", proc)
+    return [cells(line) for line in stdout_lines(proc) if not line.startswith("[안내]")]
+
+
+def smoke_phase5(data_dir: Path) -> None:
+    run_cli(data_dir, "list")  # 초기화 안내 소비
+    add_tx(data_dir, "2024-01-15", "expense", "food", "15000", "점심", "meal")
+    add_tx(data_dir, "2024-01-14", "income", "salary", "3000000", "월급")
+    add_tx(data_dir, "2024-01-12", "expense", "transport", "20000", "버스", "commute")
+
+    # update: 금액·메모 변경이 list 에 반영되고 다른 거래는 그대로
+    proc = run_cli(data_dir, "update", "--id", "TX-000001", "--amount", "18000", "--memo", "점심+커피")
+    expect(proc.returncode == 0 and stdout_lines(proc) == ["[수정 완료] id=TX-000001"], "update 성공 (README 5.7)", proc)
+    rows = list_rows(data_dir)
+    expect(rows[0] == ["TX-000001", "2024-01-15", "expense", "food", "18000", "점심+커피"], "update 반영", proc)
+    expect(rows[1][:5] == ["TX-000002", "2024-01-14", "income", "salary", "3000000"], "다른 거래 보존")
+    expect(rows[2] == ["TX-000003", "2024-01-12", "expense", "transport", "20000", "버스"], "다른 거래 보존 2")
+
+    proc = run_cli(data_dir, "update", "--id", "TX-000001", "--tags", "")
+    expect(proc.returncode == 0, '--tags "" 비움', proc)
+    proc = run_cli(data_dir, "search", "--tag", "meal")
+    expect(stdout_lines(proc) == ["[안내] 조건에 맞는 거래가 없습니다"], "태그가 비워졌다", proc)
+
+    expect_two_line_error(run_cli(data_dir, "update", "--id", "TX-999999", "--amount", "1"), "[오류] 거래를 찾을 수 없습니다: TX-999999", "없는 id")
+    expect_two_line_error(run_cli(data_dir, "update", "--id", "TX-000001", "--amount", "1,000"), "[오류] 금액은 양의 정수여야 합니다 (입력: 1,000)", "금액 검증")
+    expect_two_line_error(run_cli(data_dir, "update", "--id", "TX-000001", "--category", "coffee"), "[오류] 등록되지 않은 카테고리입니다: coffee", "미등록 카테고리")
+    proc = run_cli(data_dir, "update", "--id", "TX-000001")
+    expect(proc.returncode == 2 and "Traceback" not in proc.stderr, "수정 옵션 없음은 사용법 오류 2 (D03)", proc)
+    expect(list_rows(data_dir)[0][4] == "18000", "실패한 update 는 파일을 바꾸지 않는다")
+
+    # delete: 건수 감소, 재삭제는 없는 id
+    proc = run_cli(data_dir, "delete", "--id", "TX-000003")
+    expect(proc.returncode == 0 and stdout_lines(proc) == ["[삭제 완료] id=TX-000003"], "delete 성공 (README 5.8)", proc)
+    expect([r[0] for r in list_rows(data_dir)] == ["TX-000001", "TX-000002"], "delete 후 2건")
+    expect_two_line_error(run_cli(data_dir, "delete", "--id", "TX-000003"), "[오류] 거래를 찾을 수 없습니다: TX-000003", "없는 id delete")
+
+    # category remove: 사용 중 차단 → --replace 검증 → 재배정 후 삭제 → 미사용 즉시 삭제
+    expect_two_line_error(run_cli(data_dir, "category", "remove", "--name", "food"), "[오류] 'food'를 사용하는 거래가 1건 있어 삭제할 수 없습니다.", "사용 중 차단 (D18)")
+    expect_two_line_error(run_cli(data_dir, "category", "remove", "--name", "food", "--replace", "food"), "[오류] 대체 카테고리가 삭제 대상과 같습니다: food", "자기 자신 거부")
+    expect_two_line_error(run_cli(data_dir, "category", "remove", "--name", "food", "--replace", "coffee"), "[오류] 등록되지 않은 카테고리입니다: coffee", "없는 대체 카테고리")
+    expect_two_line_error(run_cli(data_dir, "category", "remove", "--name", "cafe"), "[오류] 카테고리를 찾을 수 없습니다: cafe", "없는 카테고리")
+    proc = run_cli(data_dir, "category", "remove", "--name", "food", "--replace", "etc")
+    expect(proc.returncode == 0 and stdout_lines(proc) == ["[완료] 거래 1건을 'etc'로 이동하고 category=food 를 삭제했습니다."], "--replace 재배정 (README 5.6)", proc)
+    proc = run_cli(data_dir, "search", "--category", "etc")
+    expect([cells(line)[0] for line in stdout_lines(proc)] == ["TX-000001"], "재배정된 거래를 search --category 로 확인", proc)
+    proc = run_cli(data_dir, "search", "--category", "food")
+    expect(stdout_lines(proc) == ["[안내] 조건에 맞는 거래가 없습니다"], "옛 카테고리는 0건", proc)
+    proc = run_cli(data_dir, "category", "remove", "--name", "rent")
+    expect(proc.returncode == 0 and stdout_lines(proc) == ["[삭제 완료] category=rent"], "미사용 즉시 삭제", proc)
+    proc = run_cli(data_dir, "category", "list")
+    expect(stdout_lines(proc) == ["- etc", "- salary", "- transport"], "삭제 후 category list", proc)
+
     check_unimplemented(data_dir)
 
 
@@ -286,7 +350,8 @@ SMOKES: dict[int, SmokeFn] = {
     1: smoke_phase1,
     3: smoke_phase3,
     4: smoke_phase4,
-    # 5: update/delete/remove, 6: import/export, 7: backup
+    5: smoke_phase5,
+    # 6: import/export, 7: backup
 }
 
 

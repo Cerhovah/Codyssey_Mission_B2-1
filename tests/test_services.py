@@ -181,5 +181,94 @@ class SummaryAndBudgetScenario(ServicesTestCase):
             self.svc.budgets.summary("2024/01", 5)
 
 
+class UpdateDeleteScenario(ServicesTestCase):
+    """update 부분 수정·검증 실패·없는 id, delete 성공·없는 id·건수 감소, 다른 거래 보존 (D03, D21, D40)."""
+
+    def snapshot(self) -> list[tuple[str, str, str, int, str, str, list[str]]]:
+        return [(t.id, t.type, t.date, t.amount, t.category, t.memo, t.tags) for t in self.svc.transactions.list_recent(100)]
+
+    def test_update_then_delete(self) -> None:
+        self.seed_january()
+        before = self.snapshot()
+        raw_before = (self.data_dir / "transactions.jsonl").read_bytes()
+
+        updated = self.svc.transactions.update(" TX-000002 ", amount="18000", memo="점심+커피", tags="meal, coffee")
+        self.assertEqual((updated.id, updated.amount, updated.memo, updated.tags), ("TX-000002", 18000, "점심+커피", ["meal", "coffee"]))
+        self.assertEqual((updated.type, updated.date, updated.category), ("expense", "2024-01-15", "food"))  # 나머지 유지
+        after = self.snapshot()
+        self.assertEqual(len(after), 5)
+        self.assertEqual([row for row in after if row[0] != "TX-000002"], [row for row in before if row[0] != "TX-000002"])
+
+        # 비우기와 타입·날짜·카테고리 변경 (재정렬에도 반영)
+        cleared = self.svc.transactions.update("TX-000002", memo="", tags="")
+        self.assertEqual((cleared.memo, cleared.tags), ("", []))
+        moved = self.svc.transactions.update("TX-000005", date="2024-01-31", type_="Income", category="salary")
+        self.assertEqual((moved.date, moved.type, moved.category, moved.amount), ("2024-01-31", "income", "salary", 500000))
+        self.assertEqual([t.id for t in self.svc.transactions.list_recent(2)], ["TX-000005", "TX-000003"])
+
+        # 검증 실패·없는 id 는 파일을 바꾸지 않는다
+        raw_mid = (self.data_dir / "transactions.jsonl").read_bytes()
+        self.assertNotEqual(raw_mid, raw_before)
+        failures: list[tuple[type[Exception], str, dict[str, str]]] = [
+            (ValidationError, "TX-000001", {"amount": "0"}),
+            (ValidationError, "TX-000001", {"date": "2024-1-5"}),
+            (ValidationError, "TX-000001", {"type_": "transfer"}),
+            (NotFoundError, "TX-000001", {"category": "coffee"}),
+            (NotFoundError, "TX-999999", {"amount": "1"}),
+            (ValidationError, "12", {"amount": "1"}),          # id 형식 오류
+            (ValidationError, "TX-000001", {}),                 # 수정 항목 없음
+        ]
+        for exc_type, tx_id, kwargs in failures:
+            with self.subTest(tx_id=tx_id, kwargs=kwargs):
+                with self.assertRaises(exc_type):
+                    self.svc.transactions.update(tx_id, **kwargs)  # type: ignore[arg-type]
+        self.assertEqual((self.data_dir / "transactions.jsonl").read_bytes(), raw_mid)
+
+        # delete: 대상만 사라지고 나머지 보존, 없는 id 는 NotFoundError, 번호는 재사용되지 않음(최대값 기준)
+        deleted = self.svc.transactions.delete("TX-000003")
+        self.assertEqual(deleted.id, "TX-000003")
+        self.assertEqual([t.id for t in self.svc.transactions.list_recent(100)], ["TX-000005", "TX-000002", "TX-000001", "TX-000004"])
+        with self.assertRaises(NotFoundError) as ctx:
+            self.svc.transactions.delete("TX-000003")
+        self.assertEqual(ctx.exception.message, "거래를 찾을 수 없습니다: TX-000003")
+        self.assertIn("list", ctx.exception.hint)
+        self.assertEqual(self.add("2024-02-01"), "TX-000006")
+        self.assertEqual(sorted(p.name for p in self.data_dir.iterdir() if p.suffix == ".tmp"), [])
+
+
+class CategoryRemoveScenario(ServicesTestCase):
+    """category remove: 없음·차단·--replace 재배정·자기 자신 거부·미사용 즉시 삭제 (D18, D40)."""
+
+    def test_remove_paths(self) -> None:
+        self.seed_january()  # food 2건, transport 1건, salary 1건, rent 1건
+        with self.assertRaises(NotFoundError):
+            self.svc.categories.remove("cafe")
+        with self.assertRaises(ConflictError) as ctx:
+            self.svc.categories.remove("food")
+        self.assertEqual(ctx.exception.message, "'food'를 사용하는 거래가 2건 있어 삭제할 수 없습니다.")
+        self.assertIn("--replace", ctx.exception.hint)
+        with self.assertRaises(ValidationError):
+            self.svc.categories.remove("food", replace="food")
+        with self.assertRaises(NotFoundError):
+            self.svc.categories.remove("food", replace="coffee")
+        self.assertIn("food", self.svc.categories.list_names())  # 실패는 아무것도 바꾸지 않는다
+        self.assertEqual(len(self.svc.transactions.search(category="food")), 2)
+
+        self.assertEqual(self.svc.categories.remove("food", replace=" etc "), 2)
+        self.assertNotIn("food", self.svc.categories.list_names())
+        self.assertEqual([t.id for t in self.svc.transactions.search(category="etc")], ["TX-000003", "TX-000002"])
+        self.assertEqual(self.svc.transactions.search(category="food"), [])
+        self.assertEqual(len(self.svc.transactions.list_recent(100)), 5)  # 거래 건수 유지, 다른 거래 보존
+        self.assertEqual(self.svc.transactions.search(category="transport")[0].id, "TX-000004")
+
+        self.assertEqual(self.svc.categories.remove("etc", replace="transport"), 2)  # 재배정 연쇄
+        self.assertEqual(len(self.svc.transactions.search(category="transport")), 3)
+        self.svc.categories.add("unused")
+        self.assertEqual(self.svc.categories.remove("unused"), 0)                      # 미사용 즉시 삭제
+        self.svc.categories.add("unused2")
+        self.assertEqual(self.svc.categories.remove("unused2", replace="transport"), 0)  # 미사용 + replace 도 이동 0건
+        self.assertEqual(self.svc.categories.list_names(), ["rent", "salary", "transport"])
+
+
 if __name__ == "__main__":
     unittest.main()
