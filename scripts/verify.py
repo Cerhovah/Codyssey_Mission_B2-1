@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parent.parent
-CURRENT_PHASE = 5  # 구현이 끝난 마지막 Phase. Phase 를 완료할 때마다 올린다.
+CURRENT_PHASE = 6  # 구현이 끝난 마지막 Phase. Phase 를 완료할 때마다 올린다.
 
 SmokeFn = Callable[[Path], None]
 
@@ -103,8 +103,6 @@ USAGE_ERROR_TARGETS: list[list[str]] = [
 
 # 아직 구현되지 않은 명령. Phase 가 끝날 때마다 구현된 명령을 여기서 빼고 해당 Phase 스모크로 옮긴다.
 UNIMPLEMENTED_TARGETS: list[list[str]] = [
-    ["import", "--from", "x.csv"],
-    ["export", "--out", "x.csv", "--month", "2024-01"],
     ["backup"],
 ]
 
@@ -343,7 +341,48 @@ def smoke_phase5(data_dir: Path) -> None:
     proc = run_cli(data_dir, "category", "list")
     expect(stdout_lines(proc) == ["- etc", "- salary", "- transport"], "삭제 후 category list", proc)
 
-    check_unimplemented(data_dir)
+
+# ---------------------------------------------------------------------------
+# Phase 6 — import(샘플 CSV, skip 보고) → export(헤더·행수) → 라운드트립 → 조건 없음 2
+# ---------------------------------------------------------------------------
+
+SAMPLE_CSV = ROOT / "samples" / "import_sample.csv"
+CSV_HEADER = "date,type,category,amount,memo,tags"
+
+
+def smoke_phase6(data_dir: Path) -> None:
+    first = data_dir / "first"
+    proc = run_cli(first, "import", "--from", str(SAMPLE_CSV))
+    expect(proc.returncode == 0, "import 샘플 종료 0", proc)
+    expect(
+        stdout_lines(proc)[1:] == ["[완료] imported=5, skipped=1", "  - 3행: 금액은 양의 정수여야 합니다 (입력: -500)"],
+        "import 요약과 skip 사유 (README 5.9, D19)", proc,
+    )
+    expect(len(list_rows(first)) == 5, "import 후 5건")
+
+    out = data_dir / "export.csv"
+    proc = run_cli(first, "export", "--out", str(out), "--month", "2024-01")
+    expect(proc.returncode == 0 and stdout_lines(proc) == [f"[완료] {out} (5 records)"], "export --month (D20)", proc)
+    lines = out.read_text(encoding="utf-8").splitlines()
+    expect(lines[0] == CSV_HEADER and len(lines) == 6, "export 파일: 헤더 + 5행", proc)
+    expect(lines[1].startswith("2024-01-20,expense,food,30000,") and lines[-1].startswith("2024-01-05,expense,rent,500000,"), "export 는 최신순", proc)
+    expect(b"\r\n" not in out.read_bytes(), "newline='' 로 빈 줄 없음")
+
+    second = data_dir / "second"
+    proc = run_cli(second, "import", "--from", str(out))
+    expect(proc.returncode == 0 and stdout_lines(proc)[1:] == ["[완료] imported=5, skipped=0"], "export 파일을 새 폴더에 import", proc)
+    expect(
+        sorted(r[1:] for r in list_rows(second)) == sorted(r[1:] for r in list_rows(first)),
+        "라운드트립: id 를 제외한 필드가 같다",
+    )
+
+    proc = run_cli(first, "export", "--out", str(data_dir / "range.csv"), "--from", "2024-01-13", "--to", "2024-01-15")
+    expect(proc.returncode == 0 and "(2 records)" in proc.stdout, "export --from/--to 포함 범위", proc)
+    proc = run_cli(first, "export", "--out", str(out))
+    expect(proc.returncode == 2 and "Traceback" not in proc.stderr, "export 조건 없음은 사용법 오류 2 (D20)", proc)
+    expect_two_line_error(run_cli(first, "import", "--from", str(data_dir / "없음.csv")), f"[오류] 가져올 파일을 찾을 수 없습니다: {data_dir / '없음.csv'}", "import 파일 없음")
+
+    check_unimplemented(first)
 
 
 SMOKES: dict[int, SmokeFn] = {
@@ -351,7 +390,8 @@ SMOKES: dict[int, SmokeFn] = {
     3: smoke_phase3,
     4: smoke_phase4,
     5: smoke_phase5,
-    # 6: import/export, 7: backup
+    6: smoke_phase6,
+    # 7: backup
 }
 
 

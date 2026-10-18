@@ -3,10 +3,12 @@
 P3: CategoryService.list_names/add/require, TransactionService.add/list_recent, build_services 의 초기화 연결(D36).
 P4: TransactionService.search(D28, D38), BudgetService.set_budget/list_all/summary(D16, D17, D25, D39).
 P5: TransactionService.update/delete, CategoryService.remove(D03, D18, D40). 재작성은 명령당 최대 1회.
-P6 이후 메서드는 "아직 구현되지 않은 명령입니다" 오류로 끝난다. argparse·print·input 은 여기서 쓰지 않는다.
+P6: TransactionService.import_csv/export_csv(D19, D20, D41). CSV 는 교환 포맷이며 저장 포맷은 JSONL 그대로다.
+P7 메서드(backup)는 "아직 구현되지 않은 명령입니다" 오류로 끝난다. argparse·print·input 은 여기서 쓰지 않는다.
 """
 from __future__ import annotations
 
+import csv
 import heapq
 from dataclasses import dataclass, field
 from dataclasses import replace as replace_fields
@@ -14,12 +16,13 @@ from pathlib import Path
 from typing import Iterator
 
 from .decorators import log_call, timed
-from .errors import ConflictError, NotFoundError, ValidationError, not_implemented
+from .errors import AppError, ConflictError, NotFoundError, StorageError, ValidationError, not_implemented
 from .models import (
     TYPE_EXPENSE,
     TYPE_INCOME,
     Budget,
     Transaction,
+    format_transaction_id,
     parse_amount,
     parse_category_name,
     parse_date,
@@ -63,6 +66,21 @@ class MonthlySummary:
     @property
     def balance(self) -> int:
         return self.income - self.expense
+
+
+CSV_COLUMNS: tuple[str, ...] = ("date", "type", "category", "amount", "memo", "tags")  # README 6장, D20
+CSV_HEADER_HINT = "필수 헤더: " + ",".join(CSV_COLUMNS) + " (UTF-8, 첫 줄 헤더)"
+
+
+def _date_range(date_from: str | None, date_to: str | None) -> tuple[str | None, str | None]:
+    """--from/--to 를 검증한다. 시작일이 종료일보다 늦으면 ValidationError (D38, D41)."""
+    start = parse_date(date_from) if _given(date_from) else None
+    end = parse_date(date_to) if _given(date_to) else None
+    if start is not None and end is not None and start > end:
+        raise ValidationError(
+            f"시작일이 종료일보다 늦습니다 (--from {start}, --to {end})", hint="--from 은 --to 보다 같거나 빨라야 합니다"
+        )
+    return start, end
 
 
 def _given(value: str | None) -> bool:
@@ -193,12 +211,7 @@ class TransactionService:
         limit: int | None = None,
     ) -> list[Transaction]:
         """모든 조건 AND. 제너레이터로 걸러 통과분만 (date, id) 내림차순 정렬한다 (D07, D28, D38)."""
-        start = parse_date(date_from) if _given(date_from) else None
-        end = parse_date(date_to) if _given(date_to) else None
-        if start is not None and end is not None and start > end:
-            raise ValidationError(
-                f"시작일이 종료일보다 늦습니다 (--from {start}, --to {end})", hint="--from 은 --to 보다 같거나 빨라야 합니다"
-            )
+        start, end = _date_range(date_from, date_to)
         wanted_type = parse_type(type_) if _given(type_) else None
         wanted_category = category.strip() if _given(category) else None
         wanted_tag = tag.strip() if _given(tag) else None
@@ -268,7 +281,56 @@ class TransactionService:
     @log_call
     @timed
     def import_csv(self, source: Path) -> ImportResult:
-        raise not_implemented(6)
+        """CSV 를 행 단위로 검증해 유효 행만 새 id 로 저장한다. 실패 행은 (행번호, 사유) 로 보고 (D19, D41)."""
+        if not source.is_file():
+            raise StorageError(f"가져올 파일을 찾을 수 없습니다: {source}", hint="--from 경로를 확인하세요")
+        result = ImportResult()
+        try:
+            with open(source, "r", encoding="utf-8-sig", newline="") as handle:
+                reader = csv.DictReader(handle)
+                header = reader.fieldnames or []
+                missing = [column for column in CSV_COLUMNS if column not in header]
+                if missing:
+                    raise ValidationError(
+                        f"CSV 헤더가 올바르지 않습니다 (누락: {', '.join(missing)})", hint=CSV_HEADER_HINT
+                    )
+                number = transaction_number(self.transactions.next_id())  # 시작 번호 1회 (D41)
+                for row in reader:
+                    line_no = reader.line_num
+                    try:
+                        tx = self._from_csv_row(row, format_transaction_id(number))
+                    except AppError as err:
+                        result.skipped.append((line_no, err.message))
+                        continue
+                    self.transactions.append(tx)
+                    number += 1
+                    result.imported += 1
+        except UnicodeDecodeError:
+            raise StorageError(f"CSV 파일을 UTF-8 로 읽을 수 없습니다: {source}", hint=CSV_HEADER_HINT) from None
+        except csv.Error as exc:
+            raise ValidationError(f"CSV 형식 오류: {exc}", hint=CSV_HEADER_HINT) from None
+        except OSError as exc:
+            raise StorageError(
+                f"CSV 파일을 읽을 수 없습니다: {source} ({exc.strerror or type(exc).__name__})", hint="파일 권한을 확인하세요"
+            ) from None
+        return result
+
+    def _from_csv_row(self, row: dict[str, str | None], tx_id: str) -> Transaction:
+        """CSV 한 행 → Transaction. 비어 있거나 모자란 열은 빈 문자열로 본다 (D41)."""
+
+        def cell(column: str) -> str:
+            value = row.get(column)
+            return value if isinstance(value, str) else ""
+
+        return Transaction(
+            id=tx_id,
+            type=parse_type(cell("type")),
+            date=parse_date(cell("date")),
+            amount=parse_amount(cell("amount")),
+            category=require_category(self.categories, cell("category")),
+            memo=parse_memo(cell("memo")),
+            tags=parse_tags(cell("tags")),
+        )
 
     @log_call
     @timed
@@ -280,8 +342,34 @@ class TransactionService:
         date_from: str | None = None,
         date_to: str | None = None,
     ) -> int:
-        """내보낸 건수를 돌려준다 (D20)."""
-        raise not_implemented(6)
+        """조건(AND)에 맞는 거래를 (date, id) 내림차순 CSV 로 쓰고 건수를 돌려준다. 0건도 헤더는 쓴다 (D20, D41)."""
+        target_month = parse_month(month) if _given(month) else None
+        start, end = _date_range(date_from, date_to)
+        if target_month is None and start is None and end is None:
+            raise ValidationError("기간 조건이 필요합니다", hint="--month YYYY-MM 또는 --from/--to YYYY-MM-DD")
+
+        def matches(tx: Transaction) -> bool:
+            if target_month is not None and tx.date[:7] != target_month:
+                return False
+            if start is not None and tx.date < start:
+                return False
+            if end is not None and tx.date > end:
+                return False
+            return True
+
+        rows = sorted((tx for tx in self.transactions.iter_all() if matches(tx)), key=Transaction.sort_key, reverse=True)
+        try:
+            with open(out, "w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle, lineterminator="\n")  # 기본값 CRLF 대신 LF (C11, D41)
+                writer.writerow(CSV_COLUMNS)
+                for tx in rows:
+                    writer.writerow([tx.date, tx.type, tx.category, tx.amount, tx.memo, ",".join(tx.tags)])
+        except OSError as exc:
+            raise StorageError(
+                f"CSV 파일을 쓸 수 없습니다: {out} ({exc.strerror or type(exc).__name__})",
+                hint="--out 의 폴더가 있는지, 쓰기 권한이 있는지 확인하세요",
+            ) from None
+        return len(rows)
 
 
 class BudgetService:

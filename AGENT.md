@@ -8,9 +8,9 @@
 
 1. [docs/MISSION_SPEC.md](docs/MISSION_SPEC.md) — 과제 명세 원문. **수정 금지.** 모든 요구의 근거.
 2. [README.md](README.md) — 명세 심층 분석(요구사항 R01~R25, B1~B4), 사용자 관점 사양(실행·저장·명령·CSV·종료 코드), 진행 현황.
-3. 이 문서 — 헌장(불변 규칙), 결정표 D01~D40, 계층·계약, Phase 계획, 검증 정책, Git 규칙.
+3. 이 문서 — 헌장(불변 규칙), 결정표 D01~D41, 계층·계약, Phase 계획, 검증 정책, Git 규칙.
 
-세 문서가 충돌하면 우선순위는 **원문 > 이 문서의 결정표 > README 사양 > 코드**다. 원문이 모호한 부분은 결정표가 해소한다. 결정표에 없는 모호함을 만나면 추측해서 구현하지 않고, 결정표에 D41부터 새 항목을 추가한 뒤 구현한다.
+세 문서가 충돌하면 우선순위는 **원문 > 이 문서의 결정표 > README 사양 > 코드**다. 원문이 모호한 부분은 결정표가 해소한다. 결정표에 없는 모호함을 만나면 추측해서 구현하지 않고, 결정표에 D42부터 새 항목을 추가한 뒤 구현한다.
 
 ## 2. 명세 주도 개발 원칙 (이 저장소의 SDD 해석)
 
@@ -38,7 +38,7 @@
 | C11 | 사용자 메시지·주석·docstring은 **한국어**, 식별자·JSON 키·CSV 헤더는 영어. 파일은 UTF-8(BOM 없음), LF. | 프로젝트 관례 |
 | C12 | `data/`, 백업, 내보낸 CSV, `__pycache__`는 커밋하지 않는다. 샘플 CSV만 `samples/`에 둔다. | 안전 |
 
-## 4. 결정표 (모호성 해소) — D01~D40
+## 4. 결정표 (모호성 해소) — D01~D41
 
 원문이 선택을 맡기거나 침묵한 지점의 **고정 결정**이다. 구현은 이 표를 따른다. 바꾸려면 표를 먼저 고친다.
 
@@ -84,6 +84,8 @@
 | D38 | search 조건 세부 | `--from/--to` 는 `parse_date` 로 검증(종료 1)하고 `--from` 이 `--to` 보다 늦으면 ValidationError(종료 1). `--category`·`--tag` 는 strip 후 정확 일치(등록 여부는 검사하지 않음 → 미등록이면 0건). `--q` 는 strip 후 `casefold` 부분 일치. strip 결과가 빈 문자열인 조건은 "조건 없음" 으로 본다. 필터는 제너레이터로 통과분만 모아 `(date, id)` 내림차순 정렬, `--limit` 이 있으면 `heapq.nlargest` | D28 보완. 검색은 조회이므로 카테고리 등록 검사를 강제하지 않음 |
 | D39 | summary 집계 세부 | 한 번의 순회로 수입 합·지출 합·건수(수입+지출)·카테고리별 지출 합을 구한다. TOP 은 지출 합 내림차순, 같으면 이름 오름차순, `--top` 개까지. 지출 카테고리가 N 개 미만이어도 헤더는 `지출 TOP N` 그대로 두고 있는 만큼만 나열(수입만 있는 달은 헤더만). 사용률·초과 계산은 cli 가 `MonthlySummary` 값으로 한다(D17). `budget list` 는 월 문자열 오름차순 | D16·D17 보완. 집계와 표시의 책임 분리(5장) |
 | D40 | update/delete/remove 처리 순서 | `--id` 는 `transaction_number` 로 형식 검증(형식 오류 ValidationError, 종료 1). update 는 (1) 주어진 옵션 값을 add 와 같은 `parse_*`·`require_category` 로 먼저 검증, (2) `iter_all` 스트리밍으로 대상 존재 확인(없으면 `NotFoundError("거래를 찾을 수 없습니다: {id}", hint="python -m budget_app list 로 id를 확인하세요.")`, 파일 미변경), (3) `rewrite` 1회. `--memo ""`·`--tags ""` 는 비움. delete 도 (2)→(3). category remove 는 (1) 이름 존재(없으면 NotFoundError), (2) `--replace` 가 있으면 존재 검사 + 자기 자신 금지(ValidationError), (3) 사용 건수 스트리밍 1회, (4) 사용 중 + `--replace` 없음 → `ConflictError("'{name}'를 사용하는 거래가 {n}건 있어 삭제할 수 없습니다.", hint="--replace <대체카테고리> 를 지정하면 해당 거래를 옮긴 뒤 삭제합니다.")`, 사용 중 + `--replace` → 재배정 rewrite 후 삭제, 미사용 → `--replace` 유무와 무관하게 바로 삭제(이동 0건) | D03·D18 보완. 검증은 전부 파일을 건드리기 전에 끝내고, 재작성은 명령당 최대 1회 |
+| D41 | import/export 세부 | **export**: `--month` 와 `--from/--to` 를 함께 주면 AND. 조건은 D38 과 같이 검증(`--from` > `--to` 종료 1). 통과분을 `(date, id)` 내림차순으로 `csv.writer`(`newline=""`, `lineterminator="
+"` 으로 LF 고정, UTF-8 BOM 없음) 에 쓰고, 출력 파일의 폴더가 없으면 `StorageError`(자동 생성 안 함). **import**: 파일 없음은 `StorageError("가져올 파일을 찾을 수 없습니다: {path}")` 종료 1. `utf-8-sig` 로 열어 BOM 을 허용하고, `csv.DictReader` 의 헤더에 필수 6열(`date,type,category,amount,memo,tags`, 이름 정확 일치) 이 모두 없으면 `ValidationError`(힌트에 필수 헤더) 로 저장 없이 종료 1. 열 순서는 무관하고 추가 열은 무시. 행 번호는 `reader.line_num`(헤더 1행, 첫 데이터 2행, 따옴표 안 줄바꿈 포함). 각 행은 `parse_*`·`require_category` 로 검증하고 AppError 의 `message` 를 skip 사유로 쓴다. 비어 있거나 모자란 열은 빈 문자열로 본다. id 는 `next_id` 로 시작 번호를 1회 구한 뒤 유효 행마다 +1 하여 `append` | D19·D20 보완. 대량 import 에서 next_id 재스캔(O(n²)) 회피 |
 
 ## 5. 계층과 모듈 책임
 

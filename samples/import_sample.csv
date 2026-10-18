@@ -1,0 +1,7 @@
+date,type,category,amount,memo,tags
+2024-01-15,expense,food,15000,점심,meal
+2024-01-03,expense,food,-500,잘못된 금액,
+2024-01-14,income,salary,3000000,,
+2024-01-12,expense,transport,20000,버스,"commute,daily"
+2024-01-20,expense,food,30000,저녁 식사,"meal,family"
+2024-01-05,expense,rent,500000,1월 월세,
