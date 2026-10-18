@@ -1,0 +1,283 @@
+# AGENT.md — budget_app 명세 주도 개발 지침
+
+버전 1.0 / 기준일 2026-10-18 / 대상: 이 저장소에서 코드를 작성하는 모든 AI 에이전트와 사람
+
+## 1. 목적과 읽는 순서
+
+이 저장소는 Codyssey Mission B2-1 "나만의 용돈 기입장" 콘솔 가계부를 **명세 주도 개발(SDD)** 로 완성한다. 문서가 진실의 원천이고 코드는 문서의 산출물이다. 작업을 시작하기 전에 아래 세 문서를 순서대로 끝까지 읽는다.
+
+1. [docs/MISSION_SPEC.md](docs/MISSION_SPEC.md) — 과제 명세 원문. **수정 금지.** 모든 요구의 근거.
+2. [README.md](README.md) — 명세 심층 분석(요구사항 R01~R25, B1~B4), 사용자 관점 사양(실행·저장·명령·CSV·종료 코드), 진행 현황.
+3. 이 문서 — 헌장(불변 규칙), 결정표 D01~D30, 계층·계약, Phase 계획, 검증 정책, Git 규칙.
+
+세 문서가 충돌하면 우선순위는 **원문 > 이 문서의 결정표 > README 사양 > 코드**다. 원문이 모호한 부분은 결정표가 해소한다. 결정표에 없는 모호함을 만나면 추측해서 구현하지 않고, 결정표에 D31부터 새 항목을 추가한 뒤 구현한다.
+
+## 2. 명세 주도 개발 원칙 (이 저장소의 SDD 해석)
+
+- **Spec-first, then spec-anchored.** 명세와 결정표가 먼저 있고, 구현 후에도 문서를 코드와 함께 유지한다. 동작을 바꾸려면 결정표나 README 사양을 먼저 고치고 같은 커밋에 코드를 반영한다. 코드만 고치고 문서를 남겨 두는 커밋은 금지한다.
+- **추측 대신 결정.** Spec Kit의 `[NEEDS CLARIFICATION]` 표식에 해당하는 것이 이 저장소의 결정표다. 모호한 요구는 "Don't guess" 원칙에 따라 결정표에 먼저 기록한다.
+- **작게 나누되, 검증은 한 번.** Atlassian의 규칙 "Break large requests into small, verifiable steps"를 따르되, 이 과제는 커밋·푸시 **10회 이내** 제약이 있으므로 단계는 9개로 크게 묶고 각 단계의 검증은 **게이트 하나**(`python scripts/verify.py`)로 끝낸다.
+- **문서 과잉 금지.** Böckeler가 경고한 "sledgehammer to crack a nut"를 피한다. 문서는 세 개(원문 / README / AGENT)로 고정한다. 새 마크다운, 계획 파일, ADR 폴더를 만들지 않는다. 설계 메모가 필요하면 이 문서의 해당 장을 수정한다.
+- **개발자는 검토자.** 산출물을 만든 뒤 반드시 게이트를 실제로 실행하고 결과를 보고 다음 단계로 간다. 파일을 만들었다는 이유로 완료를 선언하지 않는다.
+- **범위 고정.** 요구사항 매트릭스(README 1.3)와 결정표에 없는 기능은 만들지 않는다. 좋은 아이디어라도 D31+에 기록하고 사용자 승인 없이는 구현하지 않는다.
+
+## 3. 헌장 (Constitution) — 어떤 Phase에서도 바꾸지 않는 규칙
+
+| # | 규칙 | 근거 |
+| --- | --- | --- |
+| C1 | **표준 라이브러리만** 사용한다. `pip install`이 필요한 패키지는 테스트·도구를 포함해 전면 금지. 테스트 러너는 `unittest`. | 원문 7장 |
+| C2 | Python **3.10 이상** 문법만. `match` 문과 `X \| Y` 타입은 허용, 3.11+ 전용 기능(`tomllib`, `ExceptionGroup`, `Self`)은 금지. | 원문 6장 |
+| C3 | 저장 포맷은 **JSONL**. 파일은 `transactions.jsonl`, `categories.jsonl`, `budgets.jsonl` 3개. 카운터·메타 파일을 추가하지 않는다. | 원문 4-3, D01, D05 |
+| C4 | 옵션은 **`--long` 형식만**. 단축 옵션(`-l`)을 만들지 않는다. | 원문 4-1, 7장 |
+| C5 | 저장소 읽기는 **전부 제너레이터**(`yield`). `readlines()`, `json.load(전체)`, 리스트 변환 후 처리 금지. 정렬이 필요하면 `heapq.nlargest` 또는 필터 후 부분집합 정렬만 허용. | 원문 4-5, 4-7 |
+| C6 | 파일 재작성은 **임시 파일 + `os.replace`**. 원본을 직접 열어 덮어쓰지 않는다. | 원문 4-6, 보너스 4 |
+| C7 | **스택트레이스 출력 금지.** 모든 오류는 `[오류] 원인` / `[힌트] 해결` 두 줄. 종료 코드 0/1/2/130 고정. | 원문 4-13, 7장 |
+| C8 | 데코레이터 `handle_errors`, `log_call`, `timed` 를 구현하고 **실제 적용**한다. 장식용으로 정의만 해 두지 않는다. | 원문 4-12 |
+| C9 | **모든 함수·메서드에 타입 힌트.** 파일 첫 줄에 `from __future__ import annotations`. `Any`는 JSON 경계에서만. | 원문 3장 |
+| C10 | 모듈 책임 분리: `cli → services → repository → models` 단방향. 역방향 import 금지. `cli`에서 파일을 직접 열지 않는다. | 원문 4-14 |
+| C11 | 사용자 메시지·주석·docstring은 **한국어**, 식별자·JSON 키·CSV 헤더는 영어. 파일은 UTF-8(BOM 없음), LF. | 프로젝트 관례 |
+| C12 | `data/`, 백업, 내보낸 CSV, `__pycache__`는 커밋하지 않는다. 샘플 CSV만 `samples/`에 둔다. | 안전 |
+
+## 4. 결정표 (모호성 해소) — D01~D30
+
+원문이 선택을 맡기거나 침묵한 지점의 **고정 결정**이다. 구현은 이 표를 따른다. 바꾸려면 표를 먼저 고친다.
+
+| ID | 주제 | 결정 | 이유 |
+| --- | --- | --- | --- |
+| D01 | 저장 포맷 | JSONL. 1줄 = JSON 객체 1개, `ensure_ascii=False`, UTF-8, LF | tags 리스트·메모 쉼표 안전, append 1줄, 스트리밍 자연 |
+| D02 | 옵션 표기 | 롱 옵션만. 원문의 `-limit`, `-from`, `-top`, `-data-dir`는 `--`의 표기 손실로 해석 | 원문 4-1 "`--`로 통일" |
+| D03 | update 방식 | **옵션 기반(안 A)** 고정. `update --id <id> [--date] [--type] [--category] [--amount] [--memo] [--tags]`. 최소 1개 필요 | 스크립트·테스트 가능, 검증 단위 최소화 |
+| D04 | 빈 카테고리 | **안 A** 기본 카테고리 자동 생성: `food, transport, rent, salary, etc` | 첫 실행에서 바로 add 가능, 예시 화면의 salary 포함 |
+| D05 | id 규칙 | `TX-` + 6자리 0패딩. 다음 번호 = 스트리밍으로 구한 최대 번호 + 1. 999999 초과 시 7자리로 자연 확장 | 메타 파일 없이 3파일 유지. 유일성은 항상 보장 (삭제 후 번호 재사용 가능함은 문서화된 한계) |
+| D06 | "최신순" | `date` 내림차순, 같은 날짜는 `id` 내림차순 | 입력 순서보다 거래일이 사용자 기대에 맞음 |
+| D07 | 스트리밍 + 정렬 | list: `heapq.nlargest(limit, gen, key=(date, id))`. search: 필터 통과 레코드만 모아 정렬, `--limit` 선택 지원(기본 무제한) | 전체 로드 금지와 최신순 요구를 동시에 충족 |
+| D08 | amount | 양의 **정수**만. `int(str)` 성공 + `> 0`. 소수·쉼표·`+` 기호 거부 | CSV 스키마 "양수 정수"와 일치 |
+| D09 | date | `datetime.strptime(s, "%Y-%m-%d")` 엄격 검증. `2024-1-5` 거부 | 원문 YYYY-MM-DD |
+| D10 | type | `income` / `expense`. 입력은 strip + lower 후 비교 | 사용자 편의, 저장은 소문자 고정 |
+| D11 | tags | 쉼표 분리 → strip → 빈 값 제거 → 순서 유지 중복 제거. JSONL은 리스트, CSV는 `"a,b"` | 원문 CSV 스키마 |
+| D12 | category 모델 | `{"name": str}` 하나. 수입/지출 타입 구분 없음. 대소문자 구분, strip, 빈 문자열 금지, 중복 등록 오류 | 원문이 타입 구분을 요구하지 않음 |
+| D13 | 검증 실패 처리 | 대화형: `[오류]`+`[힌트]` 출력 후 **같은 항목 재입력**(제한 없음). 옵션형: 즉시 종료 코드 1. Ctrl+C/EOF: `[안내] 중단했습니다` 후 130 | 원문 4-2 "재입력 요구 또는 오류 메시지" |
+| D14 | 종료 코드 | 0 정상 / 1 입력·도메인·파일 오류 / 2 argparse 사용법 오류 / 130 사용자 중단 | 원문 4-13 |
+| D15 | 오류 포맷 | `[오류] {원인}` 줄바꿈 `[힌트] {힌트}`. 힌트가 없으면 두 번째 줄 생략. 예기치 않은 예외는 `[오류] 예기치 않은 오류: {type}` + `--verbose` 안내, 종료 1 | 원문 7장 |
+| D16 | summary 데이터 없음 | 해당 월 거래 0건 → `[안내] {YYYY-MM} 데이터 없음`, 종료 0. 예산이 있으면 `예산: N원 (사용률 0.0%)` 한 줄 추가 | 원문 4-8 |
+| D17 | 예산 사용률 | `총지출 / 예산 * 100`, 소수 1자리. 지출 > 예산이면 다음 줄 `[경고] 예산 초과: +{차액}원` | 원문 4-9 |
+| D18 | category remove | 사용 중이면 기본 **차단**(종료 1, 건수 안내). `--replace <name>` 지정 시 해당 거래를 재배정(원자적 재작성) 후 삭제. 대체 카테고리는 존재해야 하고 자기 자신 불가. 미사용이면 바로 삭제 | 원문 4-10 두 선택지 모두 충족 |
+| D19 | import | 행 단위 검증. 유효 행은 저장, 실패 행은 `  - {행번호}행: {사유}` 출력. 미등록 카테고리는 skip(자동 생성 안 함). 요약 `[완료] imported=N, skipped=M`, skipped>0 이어도 종료 0. 파일 없음·헤더 불일치는 저장 없이 종료 1 | 부분 성공을 명확히 보고 |
+| D20 | export | `--month` 또는 `--from`/`--to` 중 하나 이상 필수(없으면 argparse error → 2). 열 고정 `date,type,category,amount,memo,tags`, id 제외. `newline=""`, UTF-8 BOM 없음. 0건도 헤더만 있는 파일 생성, `[완료] {파일} (0 records)` | 원문 4-11 |
+| D21 | 재작성 방식 | `tempfile.NamedTemporaryFile(dir=같은 폴더, delete=False)` → 전체 쓰기 → `flush` + `os.fsync` → `os.replace(tmp, target)`. 실패 시 임시 파일 삭제, 원본 유지 | C6, 보너스 4 |
+| D22 | 데코레이터 | `handle_errors`: CLI 진입 함수에 적용, `AppError`→메시지+코드, `KeyboardInterrupt/EOFError`→130, 그 외→D15. `log_call`: 서비스 공개 메서드에 적용, 호출명·인자 요약 DEBUG 로그. `timed`: list/search/summary/import/export에 적용, 경과 ms DEBUG 로그 | C8 |
+| D23 | 데이터 폴더 | 전역 옵션 `--data-dir PATH` (서브커맨드 **앞**), 기본 `./data`. 없으면 생성 + `[안내] 저장 폴더를 초기화했습니다: {path}` 1회 출력 | 원문 4-3 |
+| D24 | 테스트 러너 | `unittest` 만. 테스트 파일은 계층당 1개(총 4개 이하). 단일 게이트 `scripts/verify.py` 가 unittest + CLI 스모크를 순서대로 실행 | C1, 검증 최소화 |
+| D25 | budget 조회 | `budget list` 추가(월 오름차순). `budget set`은 같은 달 덮어쓰기. amount는 D08과 동일 검증 | 원문 2-5 "설정/조회" |
+| D26 | category add 입력 | 위치 인자 `category add [name]` 선택. 없으면 대화형 `카테고리명: ` 프롬프트 | 원문 예시는 대화형, 스크립트 편의 추가 |
+| D27 | 기본값 | `list --limit` 20, `summary --top` 5, `search --limit` 무제한 | 원문 "기본값 제공" |
+| D28 | search 의미 | `--q` 메모 부분 일치(대소문자 무시), `--tag` 태그 정확 일치, `--from/--to` 포함 범위, 모든 조건 AND. 0건은 `[안내] 조건에 맞는 거래가 없습니다`, 종료 0 | 원문 4-7 |
+| D29 | 보너스 범위 | P7에서 테이블 정렬(B3)과 backup(B1)만 필수. 반복 내역(B2)은 P7 게이트 통과 후 시간이 남을 때만, 같은 커밋에 포함 | 커밋 수 제한 |
+| D30 | 콘솔 인코딩 | 진입점에서 `sys.stdout/stderr/stdin.reconfigure(encoding="utf-8")` 시도(실패 무시). 모든 파일 I/O `encoding="utf-8"` 명시 | Windows cp949 대비 |
+
+## 5. 계층과 모듈 책임
+
+```text
+budget_app/
+  __main__.py     main() 호출, sys.exit(code)
+  cli.py          argparse 트리, 대화형 프롬프트(input_fn 주입), 출력 포맷 호출. 파일 I/O 금지
+  services.py     유스케이스. 검증 조합, id 발급, 집계, 재배정. 저장소만 호출
+  repository.py   JsonlStore(경로 1개: iter/append/rewrite) + TransactionRepository/CategoryStore/BudgetStore
+  models.py       @dataclass Transaction, Category, Budget. 필드 검증 함수, to_dict/from_dict
+  decorators.py   handle_errors, log_call, timed
+  errors.py       AppError(message, hint, exit_code=1) 와 하위 예외, EXIT_* 상수
+  formatting.py   금액 천단위·테이블 열 정렬·행 렌더링 (P7 전에는 단순 ' | ' join)
+scripts/verify.py 게이트: unittest 실행 → 임시 data-dir로 CLI 스모크 시나리오 → 요약 출력, 실패 시 종료 1
+tests/test_models.py, test_repository.py, test_services.py, test_cli.py
+samples/import_sample.csv
+```
+
+| 계층 | 책임 | 하지 않는 것 |
+| --- | --- | --- |
+| models | 데이터 구조, 단일 필드 검증(`parse_date`, `parse_amount`, `parse_type`, `parse_tags`), 직렬화 | 파일 접근, 카테고리 존재 검사(저장소 필요) |
+| repository | JSONL 스트리밍 읽기, append, 원자적 재작성, 파일 초기화 | 비즈니스 규칙, 출력 |
+| services | 유스케이스 조합, 교차 검증(카테고리 존재, 사용 중 여부), 집계, CSV 변환 | argparse, print, input |
+| cli | 인자 정의, 프롬프트 루프, 서비스 호출, 결과 출력 | 파일 접근, 검증 로직 중복 구현 |
+
+## 6. 데이터 계약
+
+```python
+@dataclass(slots=True)
+class Transaction:
+    id: str            # "TX-000012"
+    type: str          # "income" | "expense"
+    date: str          # "YYYY-MM-DD" (검증 완료 문자열로 보관)
+    amount: int        # > 0
+    category: str
+    memo: str = ""
+    tags: list[str] = field(default_factory=list)
+
+@dataclass(slots=True)
+class Category:
+    name: str
+
+@dataclass(slots=True)
+class Budget:
+    month: str         # "YYYY-MM"
+    amount: int        # > 0
+```
+
+- JSONL 키는 필드명과 동일. 알 수 없는 키는 무시하고, 필수 키 누락·타입 불일치 줄은 `AppError("저장 파일 {n}행이 손상되었습니다", hint="해당 줄을 수정하거나 backup에서 복구하세요")`로 종료 1.
+- 정렬 키: `(date, id)` 내림차순 (D06).
+- 월 필터: `date[:7] == month`.
+
+## 7. CLI 계약
+
+전역: `python -m budget_app [--data-dir PATH] [--verbose] <command> ...`
+
+| 명령 | 옵션 / 입력 | 성공 출력 (stdout) | 실패 → 코드 |
+| --- | --- | --- | --- |
+| `add` | 대화형 6항목 (날짜, 타입, 카테고리, 금액, 메모, 태그) | `[저장 완료] id=TX-000012` | 중단 130 |
+| `list` | `--limit N` (기본 20) | 최신순 N줄, 0건 `[안내] 거래가 없습니다` | — |
+| `search` | `--from --to --category --type --q --tag --limit` | 최신순, 0건 안내 | 날짜 형식 1 |
+| `summary` | `--month YYYY-MM` (필수) `--top N` (기본 5) | 총 수입/총 지출/잔액/[예산]/빈 줄/지출 TOP N | 월 형식 1 |
+| `budget set` | `--month --amount` (필수) | `[저장 완료] 2024-01 예산 500000원` | 금액 1 |
+| `budget list` | — | `2024-01 \| 500000원` 월 오름차순, 0건 안내 | — |
+| `category add` | `[name]` 또는 대화형 | `[저장 완료] category=food` | 중복·빈 이름 1 |
+| `category list` | — | `- name` 이름 오름차순 | — |
+| `category remove` | `--name` (필수) `[--replace NAME]` | `[삭제 완료] category=food` 또는 재배정 메시지 | 사용 중·없음 1 |
+| `update` | `--id` (필수) + 수정 옵션 1개 이상 | `[수정 완료] id=...` | 없는 id 1, 옵션 없음 2 |
+| `delete` | `--id` (필수) | `[삭제 완료] id=...` | 없는 id 1 |
+| `import` | `--from PATH` (필수) | `[완료] imported=N, skipped=M` + skip 사유 줄 | 파일·헤더 1 |
+| `export` | `--out PATH` (필수) + `--month` 또는 `--from/--to` | `[완료] {out} ({N} records)` | 조건 없음 2 |
+| `backup` | — | `[완료] data/backups/{ts} (3 files)` | — |
+
+출력 행 포맷(list/search): `id | date | type(7자리 좌정렬) | category | amount(우정렬) | memo`. P7에서 열 너비를 데이터에 맞춰 정렬한다.
+
+## 8. 오류 규약
+
+```python
+class AppError(Exception):
+    def __init__(self, message: str, hint: str = "", exit_code: int = 1): ...
+
+class ValidationError(AppError): ...   # 날짜·금액·타입·태그 형식
+class NotFoundError(AppError): ...     # 없는 id, 없는 카테고리
+class ConflictError(AppError): ...     # 중복 카테고리, 사용 중 카테고리
+class StorageError(AppError): ...      # 손상된 줄, 파일 권한, 재작성 실패
+```
+
+- 서비스와 모델은 `AppError` 하위만 던진다. 표준 예외(`ValueError`, `OSError`)는 그 자리에서 `AppError`로 감싼다.
+- `handle_errors`만 `print`로 오류를 쓴다(stderr). 다른 계층에서 오류를 직접 출력하지 않는다.
+- 대화형 재입력 루프는 `cli`가 `ValidationError`/`NotFoundError`를 잡아 메시지를 보여주고 다시 묻는다. 그 외 예외는 그대로 위로 올린다.
+
+## 9. 구현 단계 — 9 Phase, 커밋·푸시 각 1회
+
+제약: **커밋·푸시 합계 10회 이내.** 9개 Phase에 1회씩, 1회는 예비(`fix:`). 한 Phase 안에서는 커밋하지 않고, 게이트를 통과한 시점에 한 번만 커밋하고 즉시 푸시한다. 게이트가 실패하면 같은 Phase 안에서 고친다(커밋하지 않음). Phase 순서를 바꾸거나 두 Phase를 한 커밋에 합치지 않는다.
+
+각 Phase의 "게이트"는 `python scripts/verify.py` 한 번이다. 이 스크립트는 (1) `unittest` 전체, (2) 임시 `--data-dir`에서 CLI 스모크 시나리오를 실행한다. 아직 구현되지 않은 명령의 스모크는 Phase 번호로 건너뛴다(`verify.py --phase N` 또는 스크립트 내 상수).
+
+### P0 — 문서 (완료)
+
+- 산출: `docs/MISSION_SPEC.md`, `README.md`, `AGENT.md`, `.gitignore`
+- 게이트: 없음(문서 리뷰). 커밋 `docs: 명세 분석과 명세 주도 개발 계획 수립`
+
+### P1 — 골격과 계약
+
+- 산출: `budget_app/{__init__,__main__,cli,errors,decorators,models,formatting}.py`(formatting은 단순 join), `services.py`·`repository.py`는 시그니처만(`NotImplementedError` 대신 `AppError("아직 구현되지 않은 명령입니다", hint="Phase N")`), `scripts/verify.py`, `tests/test_models.py`
+- 범위: argparse 트리 **전 명령·전 옵션** 정의(D02, D23, D27), `--help` 전부 동작, 종료 코드 체계(D14), 데코레이터 3종(D22), 모델 검증 함수(D08~D11), 콘솔 인코딩(D30)
+- 완료 조건: 모든 서브커맨드 `--help` 종료 0 / 잘못된 옵션 종료 2 / `test_models` 통과 / 미구현 명령은 `[오류]` 두 줄 + 종료 1 (스택트레이스 없음)
+- 커밋: `feat: CLI 골격과 데이터 모델·오류 계약 구현`
+
+### P2 — 저장 계층
+
+- 산출: `repository.py` 완성, `tests/test_repository.py`
+- 범위: `JsonlStore.iter_records()`(yield), `append(record)`, `rewrite(records_iter)`(D21), 손상 줄 StorageError, `TransactionRepository.iter_all/next_id/append/rewrite`, `CategoryStore.names/exists/add/remove`, `BudgetStore.get/set/iter_all`, `ensure_initialized(data_dir)`(D04, D23)
+- 완료 조건: 10만 줄 임시 파일을 `iter_records`로 훑는 동안 리스트를 만들지 않음(테스트는 `itertools.islice`로 앞 3개만 소비 후 종료) / `rewrite` 도중 예외 주입 시 원본 보존 / 초기화 시 기본 카테고리 5개 / `next_id` 빈 파일 `TX-000001`
+- 커밋: `feat: JSONL 스트리밍 저장소와 원자적 재작성 구현`
+
+### P3 — category + add + list
+
+- 산출: `services.py`(CategoryService, TransactionService.add/list), `cli.py` 대화형 프롬프트, `tests/test_services.py`(시작), `verify.py` 스모크 1
+- 범위: `category add/list`(D12, D26), `add` 대화형 재입력 루프(D13), 카테고리 존재 검사, `list --limit` `heapq.nlargest`(D06, D07)
+- 완료 조건: 스모크 1 = `category list` → `category add cafe` → `add`(input 주입 3건, 1건은 잘못된 날짜 후 재입력) → `list --limit 2` 최신순 확인
+- 커밋: `feat: 카테고리 관리와 거래 추가·목록 구현`
+
+### P4 — search + summary + budget
+
+- 산출: `services.py` 확장, `tests/test_services.py` 확장, 스모크 2
+- 범위: `search` 6조건 AND + `--limit`(D28), `summary` 집계·TOP N·데이터 없음(D16)·예산 사용률·초과 경고(D17), `budget set/list`(D25)
+- 완료 조건: 스모크 2 = `budget set` → `summary --month`(예산 줄·TOP 확인) → 초과 데이터 추가 후 `[경고]` 확인 → 빈 달 `데이터 없음` → `search` 각 조건 1회
+- 커밋: `feat: 검색·월별 요약·예산 경고 구현`
+
+### P5 — update + delete + category remove
+
+- 산출: `services.py` 확장, 테스트 확장, 스모크 3
+- 범위: `update` 옵션 기반(D03), `delete`, 없는 id NotFoundError, `category remove` 차단/`--replace` 재배정(D18). 세 동작 모두 `rewrite`(D21)
+- 완료 조건: 스모크 3 = `update` 금액 변경 후 `list` 반영 → 없는 id 종료 1 → `delete` 후 건수 감소 → 사용 중 카테고리 remove 종료 1 → `--replace` 후 `search --category` 로 재배정 확인
+- 커밋: `feat: 거래 수정·삭제와 카테고리 재배정 구현`
+
+### P6 — import / export
+
+- 산출: `services.py` CSV 변환, `samples/import_sample.csv`(유효 5행 + 무효 1행), `tests/test_cli.py`(라운드트립), 스모크 4
+- 범위: `import --from`(D19), `export --out` + 기간 조건 필수(D20), 열 순서·인코딩·`newline=""`
+- 완료 조건: 스모크 4 = `import` 샘플 → `imported=5, skipped=1` → `export --month` → 파일 헤더·행수 확인 → 빈 data-dir에 다시 `import` 한 export 파일 → 건수 동일(라운드트립) → `export` 조건 없음 종료 2
+- 커밋: `feat: CSV 가져오기·내보내기 구현`
+
+### P7 — 보너스
+
+- 산출: `formatting.py` 테이블 정렬(B3), `backup` 명령(B1), (선택) 반복 내역(B2)
+- 범위: list/search/budget list 열 너비 정렬, 금액 우정렬, `backup` → `data/backups/{YYYYMMDD-HHMMSS}/` 3파일 복사(`shutil.copy2`)
+- 완료 조건: 스모크 전체(1~4) 재통과 + `backup` 폴더에 파일 3개
+- 커밋: `feat: 테이블 출력과 백업 추가`
+
+### P8 — 마무리
+
+- 산출: README 5장 예시를 **실제 출력**으로 교체, 9장 상태표 갱신, 이 문서의 어긋난 부분 수정
+- 범위: 새 터미널에서 수동 대화형 `add` 1회 확인(유일한 수동 검증), 게이트 전체 통과 기록, 알려진 한계(D05 번호 재사용 등) 명시
+- 완료 조건: `python scripts/verify.py` 전체 PASS, README 사양과 실제 출력 불일치 0건
+- 커밋: `docs: 실행 결과 반영과 최종 검증 기록`
+
+### 예비 1회
+
+- 게이트 통과 후 발견된 결함 수정 전용. `fix: ...`. 기능 추가에 쓰지 않는다.
+
+## 10. 검증 정책 — 최소 단위
+
+검증 비용이 커밋 수보다 빠르게 늘어나지 않도록 아래를 지킨다.
+
+- **게이트는 하나.** Phase 완료 판정은 `python scripts/verify.py` 결과만 본다. 별도의 수동 체크리스트를 만들지 않는다.
+- **테스트 파일은 계층당 1개, 총 4개 이하.** `test_models`(검증 함수), `test_repository`(스트리밍·원자성·초기화), `test_services`(유스케이스), `test_cli`(라운드트립·종료 코드). 함수 하나마다 테스트를 만들지 않고 **시나리오 단위**로 쓴다.
+- **스모크는 CLI 경계에서.** `subprocess.run([sys.executable, "-m", "budget_app", "--data-dir", tmp, ...])` 로 실제 진입점을 호출하고 stdout·종료 코드만 검사한다. 대화형 입력은 `input=` 으로 주입한다.
+- **수동 검증은 P8에서 1회.** 실제 터미널 대화형 `add` 확인만 사람이 한다.
+- **성능 검증은 메모리 패턴 1개.** 10만 줄 파일을 `islice`로 일부만 소비하는 테스트로 제너레이터 여부를 증명한다. 시간 측정은 `timed` 로그로 대체한다.
+- **외부 도구 금지.** mypy, ruff, pytest, coverage는 설치하지 않는다. 타입 힌트는 코드 리뷰로 확인한다.
+- **테스트 금지 목록.** 출력 문자열의 공백 1칸까지 비교하는 테스트, private 함수 직접 테스트, 같은 경로를 두 계층에서 중복 테스트.
+
+## 11. Git 규칙
+
+- 브랜치: 개인 과제이므로 `main`에 직접 커밋한다. 브랜치·PR을 만들지 않는다.
+- 커밋 메시지: `<type>: <한국어 요약>` 한 줄. type은 `docs`, `feat`, `fix`. 본문에는 Phase 번호와 게이트 결과 한 줄(`verify: PASS (unittest 12, smoke 1-3)`)을 적는다. 마지막 줄에 `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` 를 포함한다.
+- 작성자: 로컬 git 설정(`Cerhovah`)을 그대로 쓴다. `--author`로 바꾸지 않는다.
+- 푸시: 커밋 직후 `git push origin main` 1회. force push 금지. amend 금지(예비 커밋을 사용).
+- 커밋 전 확인: `git status`에 `data/`, `*.csv`(samples 제외), `__pycache__`, 백업이 없을 것.
+- 커밋·푸시 횟수는 README 9장 상태표에 기록해 10회 한도를 추적한다.
+
+## 12. 완료 보고 형식
+
+Phase를 끝낼 때 사용자에게 아래만 보고한다. 길게 쓰지 않는다.
+
+```text
+Phase N 완료 — <커밋 제목>
+게이트: python scripts/verify.py → PASS (unittest N개, smoke 1-M)
+커밋/푸시 누계: K / 10
+결정표 변경: 없음 | D31 추가(요지)
+미완·한계: 없음 | ...
+```
+
+게이트가 실패한 상태에서는 "완료"라고 쓰지 않는다. 실패 출력을 그대로 보여 주고 원인과 수정 계획을 한 줄로 적는다.
+
+## 13. 금지 사항 요약
+
+- 추측 구현(결정표 없이 모호한 요구를 해석하는 것)
+- 문서 없이 코드만 바꾸는 커밋
+- 새 마크다운·계획 파일·ADR 폴더 생성
+- `pip install`, 외부 패키지, pytest
+- 전체 파일 로드(`readlines`, `list(gen)` 후 처리), 원본 직접 덮어쓰기
+- 스택트레이스 노출, 종료 코드 0으로 오류 종료
+- 한 Phase 안의 다중 커밋, Phase 합치기, force push, amend
+- 결정표에 없는 기능 추가(보너스 B2 포함) — D31+에 기록 후 승인 대기

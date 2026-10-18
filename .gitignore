@@ -1,0 +1,22 @@
+# 런타임 데이터 (저장 파일·백업·내보낸 CSV)
+data/
+backups/
+*.csv
+!samples/*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# 로그·임시
+*.log
+*.tmp
+
+# 편집기·OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
