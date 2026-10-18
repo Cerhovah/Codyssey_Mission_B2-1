@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parent.parent
-CURRENT_PHASE = 2  # 구현이 끝난 마지막 Phase. Phase 를 완료할 때마다 올린다.
+CURRENT_PHASE = 3  # 구현이 끝난 마지막 Phase. Phase 를 완료할 때마다 올린다.
 
 SmokeFn = Callable[[Path], None]
 
@@ -51,8 +51,17 @@ def expect(condition: bool, message: str, proc: subprocess.CompletedProcess[str]
     raise SmokeFailure(message + detail)
 
 
+def stdout_lines(proc: subprocess.CompletedProcess[str]) -> list[str]:
+    return [line for line in proc.stdout.splitlines() if line.strip()]
+
+
+def cells(line: str) -> list[str]:
+    """`id | date | type | category | amount | memo` 행을 열 단위로 나눈다. 공백 정렬(P7)에 영향받지 않게 strip 한다."""
+    return [cell.strip() for cell in line.split("|")]
+
+
 # ---------------------------------------------------------------------------
-# Phase 1 — 골격과 계약: --help 전부 0, 사용법 오류 2, 미구현 명령 [오류] 두 줄 + 1
+# Phase 1 — 골격과 계약: --help 전부 0, 사용법 오류 2 (서비스 조립 전에 끝나므로 저장 폴더를 만들지 않는다, D36)
 # ---------------------------------------------------------------------------
 
 HELP_TARGETS: list[list[str]] = [
@@ -92,14 +101,12 @@ USAGE_ERROR_TARGETS: list[list[str]] = [
     ["import"],                           # --from 누락
 ]
 
+# 아직 구현되지 않은 명령. Phase 가 끝날 때마다 구현된 명령을 여기서 빼고 해당 Phase 스모크로 옮긴다.
 UNIMPLEMENTED_TARGETS: list[list[str]] = [
-    ["list"],
     ["search", "--category", "food"],
     ["summary", "--month", "2024-01"],
     ["budget", "set", "--month", "2024-01", "--amount", "500000"],
     ["budget", "list"],
-    ["category", "add", "cafe"],
-    ["category", "list"],
     ["category", "remove", "--name", "food"],
     ["update", "--id", "TX-000001", "--amount", "1"],
     ["delete", "--id", "TX-000001"],
@@ -121,6 +128,11 @@ def smoke_phase1(data_dir: Path) -> None:
         expect(proc.returncode == 2, "사용법 오류는 종료 2 이어야 합니다", proc)
         expect("Traceback" not in proc.stderr, "스택트레이스가 출력되면 안 됩니다", proc)
 
+    expect(not data_dir.joinpath("transactions.jsonl").exists(), "--help/사용법 오류는 저장 폴더를 만들지 않습니다 (D36)")
+
+
+def check_unimplemented(data_dir: Path) -> None:
+    """남은 미구현 명령은 [오류] 두 줄 + 종료 1, stdout 비어 있음. 초기화가 끝난 폴더에서 호출한다."""
     for target in UNIMPLEMENTED_TARGETS:
         proc = run_cli(data_dir, *target)
         expect(proc.returncode == 1, "미구현 명령은 종료 1 이어야 합니다", proc)
@@ -130,18 +142,79 @@ def smoke_phase1(data_dir: Path) -> None:
         expect(lines[1].startswith("[힌트] Phase "), "둘째 줄은 [힌트] Phase N", proc)
         expect(proc.stdout == "", "미구현 명령은 stdout 에 아무것도 쓰지 않습니다", proc)
 
-    # add 는 대화형이지만 P1 에서는 카테고리 조회 단계에서 미구현 오류로 끝나야 한다 (입력을 기다리지 않음).
-    proc = run_cli(data_dir, "add", input_text="")
-    expect(proc.returncode == 1 and "[오류]" in proc.stderr, "add 는 P1 에서 미구현 오류 종료 1", proc)
-
-    # --verbose 가 켜져도 오류 두 줄 계약은 유지되고 DEBUG 로그는 stderr 에만 나온다.
-    proc = run_cli(data_dir, "--verbose", "list")
+    # --verbose 가 켜져도 오류 두 줄 계약은 유지되고 DEBUG 로그(log_call)는 stderr 에만 나온다.
+    proc = run_cli(data_dir, "--verbose", *UNIMPLEMENTED_TARGETS[0])
     expect(proc.returncode == 1 and "[DEBUG]" in proc.stderr and proc.stdout == "", "--verbose 는 stderr 로그만 추가", proc)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — category list/add, add(대화형 재입력), list(최신순·--limit), 초기화 안내 1회
+# ---------------------------------------------------------------------------
+
+INIT_NOTICE = "[안내] 저장 폴더를 초기화했습니다: "
+
+
+def smoke_phase3(data_dir: Path) -> None:
+    # 첫 명령: 폴더 초기화 안내 1회 + 거래 없음 안내
+    proc = run_cli(data_dir, "list")
+    expect(proc.returncode == 0, "빈 폴더의 list 는 종료 0", proc)
+    expect(stdout_lines(proc) == [INIT_NOTICE + str(data_dir), "[안내] 거래가 없습니다"], "첫 실행은 초기화 안내 + 거래 없음", proc)
+    for name in ("transactions.jsonl", "categories.jsonl", "budgets.jsonl"):
+        expect(data_dir.joinpath(name).is_file(), f"초기화 후 {name} 이 있어야 합니다")
+
+    # category list: 기본 5개가 이름 오름차순, 안내는 다시 나오지 않는다
+    proc = run_cli(data_dir, "category", "list")
+    expect(proc.returncode == 0, "category list 종료 0", proc)
+    expect(stdout_lines(proc) == ["- etc", "- food", "- rent", "- salary", "- transport"], "기본 카테고리 5개 오름차순 (D04)", proc)
+
+    # category add: 위치 인자 / 대화형 / 중복
+    proc = run_cli(data_dir, "category", "add", "cafe")
+    expect(proc.returncode == 0 and stdout_lines(proc) == ["[저장 완료] category=cafe"], "category add cafe", proc)
+    proc = run_cli(data_dir, "category", "add", input_text="book\n")
+    expect(proc.returncode == 0 and "[저장 완료] category=book" in proc.stdout, "category add 대화형 (D26)", proc)
+    proc = run_cli(data_dir, "category", "add", "cafe")
+    expect(proc.returncode == 1 and proc.stderr.startswith("[오류]") and proc.stdout == "", "중복 카테고리는 종료 1", proc)
+    proc = run_cli(data_dir, "category", "list")
+    expect(stdout_lines(proc) == ["- book", "- cafe", "- etc", "- food", "- rent", "- salary", "- transport"], "추가 후 정렬 유지", proc)
+
+    # add 3건: 2건째는 잘못된 날짜를 먼저 넣어 재입력 흐름을 지나고, 3건째는 미등록 카테고리 재입력을 지난다 (D13, D37)
+    proc = run_cli(data_dir, "add", input_text="2024-01-15\nexpense\nfood\n15000\n점심\nmeal\n")
+    expect(proc.returncode == 0 and "[저장 완료] id=TX-000001" in proc.stdout, "add 1건째", proc)
+    expect(proc.stderr == "", "정상 add 는 stderr 가 비어 있다", proc)
+
+    proc = run_cli(data_dir, "add", input_text="2024-13-40\n2024-01-14\n Income \nsalary\n3000000\n\n\n")
+    expect(proc.returncode == 0 and "[저장 완료] id=TX-000002" in proc.stdout, "add 2건째 (날짜 재입력 후 저장)", proc)
+    expect("[오류] 존재하지 않는 날짜입니다: 2024-13-40" in proc.stdout and "[힌트] 예: 2024-01-15" in proc.stdout, "재입력 안내 두 줄은 stdout (D37)", proc)
+    expect(proc.stdout.count("날짜(YYYY-MM-DD): ") == 2 and proc.stdout.count("타입(income/expense): ") == 1, "같은 항목만 다시 묻는다", proc)
+
+    proc = run_cli(data_dir, "add", input_text="2024-01-15\nexpense\ncoffee\ncafe\n4500\n커피\n\n")
+    expect(proc.returncode == 0 and "[저장 완료] id=TX-000003" in proc.stdout, "add 3건째 (카테고리 재입력 후 저장)", proc)
+    expect("[오류] 등록되지 않은 카테고리입니다: coffee" in proc.stdout and "[힌트] 등록된 카테고리: book, cafe" in proc.stdout, "미등록 카테고리 안내", proc)
+
+    # 중단: 입력이 끊기면(EOF) 종료 130, 저장되지 않음
+    proc = run_cli(data_dir, "add", input_text="2024-01-16\n")
+    expect(proc.returncode == 130 and "[안내] 중단했습니다" in proc.stderr and "[저장 완료]" not in proc.stdout, "EOF 는 130 (D13)", proc)
+    proc = run_cli(data_dir, "add", input_text="2024-01-16\nexpense\nfood\n0\n")
+    expect(proc.returncode == 130 and "[오류] 금액은 양의 정수여야 합니다" in proc.stdout, "금액 재입력 중 EOF 도 130", proc)
+
+    # list: 최신순(날짜 내림차순, 같은 날짜는 id 내림차순), --limit
+    proc = run_cli(data_dir, "list", "--limit", "2")
+    rows = [cells(line) for line in stdout_lines(proc)]
+    expect(proc.returncode == 0 and len(rows) == 2, "list --limit 2 는 2건", proc)
+    expect(rows[0] == ["TX-000003", "2024-01-15", "expense", "cafe", "4500", "커피"], "1행: 같은 날짜 중 큰 id (D06)", proc)
+    expect(rows[1] == ["TX-000001", "2024-01-15", "expense", "food", "15000", "점심"], "2행", proc)
+    proc = run_cli(data_dir, "list")
+    rows = [cells(line) for line in stdout_lines(proc)]
+    expect([r[0] for r in rows] == ["TX-000003", "TX-000001", "TX-000002"], "list 기본 limit 20 으로 전체 최신순", proc)
+    expect(rows[2][:5] == ["TX-000002", "2024-01-14", "income", "salary", "3000000"], "income 행", proc)
+
+    check_unimplemented(data_dir)
 
 
 SMOKES: dict[int, SmokeFn] = {
     1: smoke_phase1,
-    # 3: smoke_phase3 (category/add/list), 4: search/summary/budget, 5: update/delete/remove, 6: import/export, 7: backup
+    3: smoke_phase3,
+    # 4: search/summary/budget, 5: update/delete/remove, 6: import/export, 7: backup
 }
 
 

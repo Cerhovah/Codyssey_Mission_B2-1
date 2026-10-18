@@ -1,6 +1,6 @@
-"""CLI 계층: argparse 트리, 대화형 프롬프트(input_fn 주입), 출력 (AGENT.md 7장, D02, D23, D27, D30~D32).
+"""CLI 계층: argparse 트리, 대화형 프롬프트(input_fn 주입), 출력 (AGENT.md 7장, D02, D23, D27, D30~D32, D36, D37).
 
-이 모듈은 파일을 직접 열지 않고 서비스만 호출한다. 검증 로직은 models/services 에 있다.
+이 모듈은 파일을 직접 열지 않고 서비스만 호출한다. 검증 로직은 models/services 에 있고, 여기서는 호출만 한다.
 """
 from __future__ import annotations
 
@@ -9,9 +9,10 @@ import functools
 import logging
 import sys
 from pathlib import Path
-from typing import Callable
+from typing import Callable, TypeVar
 
-from .errors import EXIT_OK, not_implemented
+from .errors import EXIT_OK, NotFoundError, ValidationError
+from .models import parse_amount, parse_date, parse_memo, parse_tags, parse_type
 from .formatting import (
     format_budget_row,
     format_category_row,
@@ -27,6 +28,7 @@ DEFAULT_SUMMARY_TOP = 5
 
 InputFn = Callable[[str], str]
 Handler = Callable[[argparse.Namespace, Services, InputFn], int]
+T = TypeVar("T")
 
 
 # ---------------------------------------------------------------------------
@@ -189,10 +191,28 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 
+def ask(input_fn: InputFn, prompt: str, parse: Callable[[str], T]) -> T:
+    """검증을 통과할 때까지 같은 항목을 다시 묻는다 (D13, D37). 오류 두 줄은 프롬프트와 같은 stdout 에 쓴다."""
+    while True:
+        raw = input_fn(prompt)
+        try:
+            return parse(raw)
+        except (ValidationError, NotFoundError) as err:
+            for line in err.format_lines():
+                print(line)
+
+
 def cmd_add(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
-    svc.categories.list_names()  # 프롬프트에서 카테고리 존재를 확인하려면 먼저 목록이 필요하다
-    # P3: 대화형 프롬프트 루프(D13)로 6항목을 받아 svc.transactions.add(...) 를 호출한다.
-    raise not_implemented(3)
+    """대화형 6항목 → 저장 → id 출력. 중단(Ctrl+C/EOF)은 handle_errors 가 130 으로 바꾼다."""
+    date = ask(input_fn, "날짜(YYYY-MM-DD): ", parse_date)
+    type_ = ask(input_fn, "타입(income/expense): ", parse_type)
+    category = ask(input_fn, "카테고리: ", svc.categories.require)
+    amount = ask(input_fn, "금액(양수 정수): ", parse_amount)
+    memo = ask(input_fn, "메모(선택): ", parse_memo)
+    tags = ask(input_fn, "태그(쉼표로 구분, 없으면 엔터): ", parse_tags)
+    tx = svc.transactions.add(date=date, type_=type_, category=category, amount=amount, memo=memo, tags=tags)
+    print(f"[저장 완료] id={tx.id}")
+    return EXIT_OK
 
 
 def cmd_list(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
@@ -366,4 +386,6 @@ def main(argv: list[str] | None = None, input_fn: InputFn = input) -> int:
         check(args)
     configure_logging(args.verbose)
     svc = build_services(Path(args.data_dir))
+    if svc.initialized:
+        print(f"[안내] 저장 폴더를 초기화했습니다: {args.data_dir}")  # D23, D36
     return dispatch(args, svc, input_fn)

@@ -8,9 +8,9 @@
 
 1. [docs/MISSION_SPEC.md](docs/MISSION_SPEC.md) — 과제 명세 원문. **수정 금지.** 모든 요구의 근거.
 2. [README.md](README.md) — 명세 심층 분석(요구사항 R01~R25, B1~B4), 사용자 관점 사양(실행·저장·명령·CSV·종료 코드), 진행 현황.
-3. 이 문서 — 헌장(불변 규칙), 결정표 D01~D35, 계층·계약, Phase 계획, 검증 정책, Git 규칙.
+3. 이 문서 — 헌장(불변 규칙), 결정표 D01~D37, 계층·계약, Phase 계획, 검증 정책, Git 규칙.
 
-세 문서가 충돌하면 우선순위는 **원문 > 이 문서의 결정표 > README 사양 > 코드**다. 원문이 모호한 부분은 결정표가 해소한다. 결정표에 없는 모호함을 만나면 추측해서 구현하지 않고, 결정표에 D36부터 새 항목을 추가한 뒤 구현한다.
+세 문서가 충돌하면 우선순위는 **원문 > 이 문서의 결정표 > README 사양 > 코드**다. 원문이 모호한 부분은 결정표가 해소한다. 결정표에 없는 모호함을 만나면 추측해서 구현하지 않고, 결정표에 D38부터 새 항목을 추가한 뒤 구현한다.
 
 ## 2. 명세 주도 개발 원칙 (이 저장소의 SDD 해석)
 
@@ -38,7 +38,7 @@
 | C11 | 사용자 메시지·주석·docstring은 **한국어**, 식별자·JSON 키·CSV 헤더는 영어. 파일은 UTF-8(BOM 없음), LF. | 프로젝트 관례 |
 | C12 | `data/`, 백업, 내보낸 CSV, `__pycache__`는 커밋하지 않는다. 샘플 CSV만 `samples/`에 둔다. | 안전 |
 
-## 4. 결정표 (모호성 해소) — D01~D35
+## 4. 결정표 (모호성 해소) — D01~D37
 
 원문이 선택을 맡기거나 침묵한 지점의 **고정 결정**이다. 구현은 이 표를 따른다. 바꾸려면 표를 먼저 고친다.
 
@@ -79,6 +79,8 @@
 | D33 | 손상 줄 판정과 변환 위치 | JSON 파싱 실패, JSON 객체가 아닌 줄, `from_dict` 의 ValidationError(필수 키 누락·타입 불일치), 거래 id 형식 불일치(`TX-` + 숫자 6자리 이상) 는 모두 `StorageError("저장 파일 {파일명} {n}행이 손상되었습니다", hint="해당 줄을 수정하거나 backup에서 복구하세요")` 로 종료 1. 행 번호 n 은 빈 줄을 포함한 물리적 줄 번호. 변환은 `JsonlStore.iter_parsed(from_dict)` 한 곳에서 하고, models 는 그대로 ValidationError 만 던진다 | 6장 계약 구현. 파일이 3개이므로 파일명을 포함해야 사용자가 고칠 줄을 찾을 수 있음 |
 | D34 | 저장 파일 부재와 OSError | 읽기(`iter_records`)에서 파일이 없으면 빈 파일로 취급(0건). `append` 는 파일을 새로 만든다. 폴더가 없거나 권한·디스크 오류 등 `OSError` 는 repository 에서 `StorageError(원인, hint="폴더와 권한을 확인하세요: {경로}")` 로 감싼다. `rewrite` 는 임시 파일을 `.{파일명}.*.tmp` 로 같은 폴더에 만들고, 실패 시 삭제 후 원본을 그대로 둔다. 레코드 제너레이터가 던진 AppError 와 그 외 예외는 감싸지 않고 그대로 올린다 | `ensure_initialized` 전에 Store 를 직접 쓰는 테스트·서비스가 안전해야 함. 8장 "표준 예외는 그 자리에서 AppError 로 감싼다" |
 | D35 | 저장소 수준 무결성과 초기화 반환값 | `CategoryStore.add` 는 이름을 `parse_category_name` 으로 정규화하고 중복이면 ConflictError, `remove` 는 없는 이름이면 NotFoundError(사용 중 여부 검사는 서비스 책임, D18). `BudgetStore.set` 은 같은 달을 자리 그대로 덮어쓴다. `ensure_initialized(data_dir)` 는 폴더·파일 3개 중 하나라도 새로 만들었을 때만 True 를 돌려주고(기본 카테고리만 채운 경우는 False), `[안내]` 출력은 반환값을 받은 cli 계층이 P3 에서 한다. 기본 카테고리는 카테고리 파일에 레코드가 0건일 때 D04 순서대로 등록한다 | 유일성은 저장 파일의 불변 조건이라 저장소가 지킨다. repository 는 print 하지 않음(5장) |
+| D36 | 초기화 호출 위치와 안내 출력 | `services.build_services(data_dir)` 가 모든 명령 진입에서 `ensure_initialized` 를 호출하고 결과를 `Services.initialized` 로 돌려준다. `cli.main` 은 서비스 조립 직후 그 값이 True 일 때만 `[안내] 저장 폴더를 초기화했습니다: {--data-dir 인자 그대로}` 를 stdout 에 1회 출력한 뒤 명령을 실행한다. `--help`·사용법 오류(종료 2)는 서비스 조립 전에 끝나므로 폴더를 만들지 않는다 | C10(cli 는 repository 를 import 하지 않음), D23 |
+| D37 | 대화형 프롬프트 규약 | add 는 `날짜(YYYY-MM-DD): `, `타입(income/expense): `, `카테고리: `, `금액(양수 정수): `, `메모(선택): `, `태그(쉼표로 구분, 없으면 엔터): ` 순서로 `input_fn` 을 호출한다. 각 항목은 `models.parse_*`(날짜·타입·금액·메모·태그)와 `CategoryService.require`(카테고리 존재, 힌트에 등록 목록) 로 검증하고, ValidationError/NotFoundError 면 `[오류]`/`[힌트]` 두 줄을 **stdout** 에 쓴 뒤 같은 항목을 다시 묻는다(D13). 그 외 예외는 올린다. 저장은 `TransactionService.add` 가 다시 한 번 검증한다 | 프롬프트와 오류가 같은 스트림에 있어야 순서가 보존됨. cli 는 검증을 구현하지 않고 호출만 한다(5장) |
 
 ## 5. 계층과 모듈 책임
 

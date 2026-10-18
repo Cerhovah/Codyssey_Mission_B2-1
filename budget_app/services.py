@@ -1,16 +1,26 @@
 """유스케이스 계층 (AGENT.md 5장). 검증 조합, id 발급, 집계, 재배정. 저장소만 호출한다.
 
-P1에서는 시그니처와 데코레이터 적용만 두고, 본문은 "아직 구현되지 않은 명령입니다" 오류로 끝난다.
-argparse·print·input 은 여기서 쓰지 않는다.
+P3: CategoryService.list_names/add/require, TransactionService.add/list_recent, build_services 의 초기화 연결(D36).
+P4 이후 메서드는 "아직 구현되지 않은 명령입니다" 오류로 끝난다. argparse·print·input 은 여기서 쓰지 않는다.
 """
 from __future__ import annotations
 
+import heapq
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .decorators import log_call, timed
-from .errors import not_implemented
-from .models import Budget, Transaction
+from .errors import NotFoundError, not_implemented
+from .models import (
+    Budget,
+    Transaction,
+    parse_amount,
+    parse_category_name,
+    parse_date,
+    parse_memo,
+    parse_tags,
+    parse_type,
+)
 from .repository import (
     BUDGETS_FILE,
     CATEGORIES_FILE,
@@ -19,6 +29,7 @@ from .repository import (
     CategoryStore,
     JsonlStore,
     TransactionRepository,
+    ensure_initialized,
 )
 
 
@@ -46,6 +57,18 @@ class MonthlySummary:
         return self.income - self.expense
 
 
+def require_category(categories: CategoryStore, name: str) -> str:
+    """이름을 정규화하고 등록 여부를 확인한다. 없으면 등록 목록을 힌트로 담은 NotFoundError (D37)."""
+    clean = parse_category_name(name)
+    if not categories.exists(clean):
+        registered = ", ".join(sorted(categories.names())) or "(없음)"
+        raise NotFoundError(
+            f"등록되지 않은 카테고리입니다: {clean}",
+            hint=f"등록된 카테고리: {registered} (추가: python -m budget_app category add <이름>)",
+        )
+    return clean
+
+
 class CategoryService:
     def __init__(self, categories: CategoryStore, transactions: TransactionRepository) -> None:
         self.categories = categories
@@ -54,11 +77,19 @@ class CategoryService:
     @log_call
     def list_names(self) -> list[str]:
         """이름 오름차순."""
-        raise not_implemented(3)
+        return sorted(self.categories.names())
 
     @log_call
     def add(self, name: str) -> str:
-        raise not_implemented(3)
+        """정규화한 이름을 등록하고 돌려준다. 빈 이름은 ValidationError, 중복은 ConflictError (D12, D35)."""
+        clean = parse_category_name(name)
+        self.categories.add(clean)
+        return clean
+
+    @log_call
+    def require(self, name: str) -> str:
+        """대화형 프롬프트용 존재 검사 (D37)."""
+        return require_category(self.categories, name)
 
     @log_call
     def remove(self, name: str, replace: str | None = None) -> int:
@@ -82,13 +113,24 @@ class TransactionService:
         memo: str = "",
         tags: str | list[str] | None = None,
     ) -> Transaction:
-        raise not_implemented(3)
+        """모든 필드를 검증한 뒤 다음 id 를 발급해 1줄 추가한다 (D05, D08~D11)."""
+        tx = Transaction(
+            id=self.transactions.next_id(),
+            type=parse_type(type_),
+            date=parse_date(date),
+            amount=parse_amount(amount),
+            category=require_category(self.categories, category),
+            memo=parse_memo(memo),
+            tags=parse_tags(tags),
+        )
+        self.transactions.append(tx)
+        return tx
 
     @log_call
     @timed
     def list_recent(self, limit: int) -> list[Transaction]:
-        """heapq.nlargest(limit, ...) 로 최신순 (D06, D07)."""
-        raise not_implemented(3)
+        """heapq.nlargest(limit, ...) 로 최신순. 메모리는 limit 건만 유지한다 (D06, D07)."""
+        return heapq.nlargest(limit, self.transactions.iter_all(), key=Transaction.sort_key)
 
     @log_call
     @timed
@@ -170,6 +212,7 @@ class Services:
     transactions: TransactionService
     categories: CategoryService
     budgets: BudgetService
+    initialized: bool = False  # 이번 실행에서 저장 폴더·파일을 새로 만들었는지 (D36)
 
     @log_call
     def backup(self) -> Path:
@@ -178,7 +221,8 @@ class Services:
 
 
 def build_services(data_dir: Path) -> Services:
-    """저장 폴더 경로로 저장소와 서비스를 조립한다. P2에서 ensure_initialized 를 연결한다."""
+    """저장 폴더를 초기화(D04, D23, D36)하고 저장소와 서비스를 조립한다. 안내 출력은 cli 가 맡는다."""
+    initialized = ensure_initialized(data_dir)
     tx_repo = TransactionRepository(JsonlStore(data_dir / TRANSACTIONS_FILE))
     category_store = CategoryStore(JsonlStore(data_dir / CATEGORIES_FILE))
     budget_store = BudgetStore(JsonlStore(data_dir / BUDGETS_FILE))
@@ -187,4 +231,5 @@ def build_services(data_dir: Path) -> Services:
         transactions=TransactionService(tx_repo, category_store),
         categories=CategoryService(category_store, tx_repo),
         budgets=BudgetService(budget_store, tx_repo),
+        initialized=initialized,
     )
