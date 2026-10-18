@@ -96,11 +96,11 @@ budget_app/
   __main__.py     main() 호출, sys.exit(code)
   cli.py          argparse 트리, 대화형 프롬프트(input_fn 주입), 출력 포맷 호출. 파일 I/O 금지
   services.py     유스케이스. 검증 조합, id 발급, 집계, 재배정. 저장소만 호출
-  repository.py   JsonlStore(경로 1개: iter/append/rewrite) + TransactionRepository/CategoryStore/BudgetStore
+  repository.py   JsonlStore(경로 1개: iter/append/rewrite) + TransactionRepository/CategoryStore/BudgetStore + ensure_initialized/backup_files
   models.py       @dataclass Transaction, Category, Budget. 필드 검증 함수, to_dict/from_dict
   decorators.py   handle_errors, log_call, timed
   errors.py       AppError(message, hint, exit_code=1) 와 하위 예외, EXIT_* 상수
-  formatting.py   금액 천단위·테이블 열 정렬·행 렌더링 (P7 전에는 단순 ' | ' join)
+  formatting.py   테이블 열 정렬(전각 폭 계산, 금액 우정렬)·행 렌더링. 천 단위 구분 없음 (D42)
 scripts/verify.py 게이트: unittest 실행 → 임시 data-dir로 CLI 스모크 시나리오 → 요약 출력, 실패 시 종료 1
 tests/test_models.py, test_repository.py, test_services.py, test_cli.py
 samples/import_sample.csv
@@ -190,56 +190,56 @@ class StorageError(AppError): ...      # 손상된 줄, 파일 권한, 재작성
 - 산출: `docs/MISSION_SPEC.md`, `README.md`, `AGENT.md`, `.gitignore`
 - 게이트: 없음(문서 리뷰). 커밋 `docs: 명세 분석과 명세 주도 개발 계획 수립`
 
-### P1 — 골격과 계약
+### P1 — 골격과 계약 (완료)
 
 - 산출: `budget_app/{__init__,__main__,cli,errors,decorators,models,formatting}.py`(formatting은 단순 join), `services.py`·`repository.py`는 시그니처만(`NotImplementedError` 대신 `AppError("아직 구현되지 않은 명령입니다", hint="Phase N")`), `scripts/verify.py`, `tests/test_models.py`
 - 범위: argparse 트리 **전 명령·전 옵션** 정의(D02, D23, D27), `--help` 전부 동작, 종료 코드 체계(D14), 데코레이터 3종(D22), 모델 검증 함수(D08~D11), 콘솔 인코딩(D30)
 - 완료 조건: 모든 서브커맨드 `--help` 종료 0 / 잘못된 옵션 종료 2 / `test_models` 통과 / 미구현 명령은 `[오류]` 두 줄 + 종료 1 (스택트레이스 없음)
 - 커밋: `feat: CLI 골격과 데이터 모델·오류 계약 구현`
 
-### P2 — 저장 계층
+### P2 — 저장 계층 (완료)
 
 - 산출: `repository.py` 완성, `tests/test_repository.py`
 - 범위: `JsonlStore.iter_records()`(yield), `append(record)`, `rewrite(records_iter)`(D21), 손상 줄 StorageError, `TransactionRepository.iter_all/next_id/append/rewrite`, `CategoryStore.names/exists/add/remove`, `BudgetStore.get/set/iter_all`, `ensure_initialized(data_dir)`(D04, D23)
 - 완료 조건: 10만 줄 임시 파일을 `iter_records`로 훑는 동안 리스트를 만들지 않음(테스트는 `itertools.islice`로 앞 3개만 소비 후 종료) / `rewrite` 도중 예외 주입 시 원본 보존 / 초기화 시 기본 카테고리 5개 / `next_id` 빈 파일 `TX-000001`
 - 커밋: `feat: JSONL 스트리밍 저장소와 원자적 재작성 구현`
 
-### P3 — category + add + list
+### P3 — category + add + list (완료)
 
 - 산출: `services.py`(CategoryService, TransactionService.add/list), `cli.py` 대화형 프롬프트, `tests/test_services.py`(시작), `verify.py` 스모크 1
 - 범위: `category add/list`(D12, D26), `add` 대화형 재입력 루프(D13), 카테고리 존재 검사, `list --limit` `heapq.nlargest`(D06, D07)
-- 완료 조건: 스모크 1 = `category list` → `category add cafe` → `add`(input 주입 3건, 1건은 잘못된 날짜 후 재입력) → `list --limit 2` 최신순 확인
+- 완료 조건: 스모크 3(스모크 번호 = Phase 번호) = `category list` → `category add cafe` → `add`(input 주입 3건, 1건은 잘못된 날짜 후 재입력) → `list --limit 2` 최신순 확인
 - 커밋: `feat: 카테고리 관리와 거래 추가·목록 구현`
 
-### P4 — search + summary + budget
+### P4 — search + summary + budget (완료)
 
 - 산출: `services.py` 확장, `tests/test_services.py` 확장, 스모크 2
 - 범위: `search` 6조건 AND + `--limit`(D28), `summary` 집계·TOP N·데이터 없음(D16)·예산 사용률·초과 경고(D17), `budget set/list`(D25)
-- 완료 조건: 스모크 2 = `budget set` → `summary --month`(예산 줄·TOP 확인) → 초과 데이터 추가 후 `[경고]` 확인 → 빈 달 `데이터 없음` → `search` 각 조건 1회
+- 완료 조건: 스모크 4 = `budget set` → `summary --month`(예산 줄·TOP 확인) → 초과 데이터 추가 후 `[경고]` 확인 → 빈 달 `데이터 없음` → `search` 각 조건 1회
 - 커밋: `feat: 검색·월별 요약·예산 경고 구현`
 
-### P5 — update + delete + category remove
+### P5 — update + delete + category remove (완료)
 
 - 산출: `services.py` 확장, 테스트 확장, 스모크 3
 - 범위: `update` 옵션 기반(D03), `delete`, 없는 id NotFoundError, `category remove` 차단/`--replace` 재배정(D18). 세 동작 모두 `rewrite`(D21)
-- 완료 조건: 스모크 3 = `update` 금액 변경 후 `list` 반영 → 없는 id 종료 1 → `delete` 후 건수 감소 → 사용 중 카테고리 remove 종료 1 → `--replace` 후 `search --category` 로 재배정 확인
+- 완료 조건: 스모크 5 = `update` 금액 변경 후 `list` 반영 → 없는 id 종료 1 → `delete` 후 건수 감소 → 사용 중 카테고리 remove 종료 1 → `--replace` 후 `search --category` 로 재배정 확인
 - 커밋: `feat: 거래 수정·삭제와 카테고리 재배정 구현`
 
-### P6 — import / export
+### P6 — import / export (완료)
 
 - 산출: `services.py` CSV 변환, `samples/import_sample.csv`(유효 5행 + 무효 1행), `tests/test_cli.py`(라운드트립), 스모크 4
 - 범위: `import --from`(D19), `export --out` + 기간 조건 필수(D20), 열 순서·인코딩·`newline=""`
-- 완료 조건: 스모크 4 = `import` 샘플 → `imported=5, skipped=1` → `export --month` → 파일 헤더·행수 확인 → 빈 data-dir에 다시 `import` 한 export 파일 → 건수 동일(라운드트립) → `export` 조건 없음 종료 2
+- 완료 조건: 스모크 6 = `import` 샘플 → `imported=5, skipped=1` → `export --month` → 파일 헤더·행수 확인 → 빈 data-dir에 다시 `import` 한 export 파일 → 건수 동일(라운드트립) → `export` 조건 없음 종료 2
 - 커밋: `feat: CSV 가져오기·내보내기 구현`
 
-### P7 — 보너스
+### P7 — 보너스 (완료, B2 제외)
 
 - 산출: `formatting.py` 테이블 정렬(B3), `backup` 명령(B1), (선택) 반복 내역(B2)
 - 범위: list/search/budget list 열 너비 정렬, 금액 우정렬, `backup` → `data/backups/{YYYYMMDD-HHMMSS}/` 3파일 복사(`shutil.copy2`)
-- 완료 조건: 스모크 전체(1~4) 재통과 + `backup` 폴더에 파일 3개
+- 완료 조건: 스모크 전체(1, 3~6) 재통과 + 스모크 7 = `backup` 폴더에 파일 3개 + 테이블 구분자 위치 일치
 - 커밋: `feat: 테이블 출력과 백업 추가`
 
-### P8 — 마무리
+### P8 — 마무리 (완료)
 
 - 산출: README 5장 예시를 **실제 출력**으로 교체, 9장 상태표 갱신, 이 문서의 어긋난 부분 수정
 - 범위: 새 터미널에서 수동 대화형 `add` 1회 확인(유일한 수동 검증), 게이트 전체 통과 기록, 알려진 한계(D05 번호 재사용 등) 명시
@@ -265,7 +265,7 @@ class StorageError(AppError): ...      # 손상된 줄, 파일 권한, 재작성
 ## 11. Git 규칙
 
 - 브랜치: 개인 과제이므로 `main`에 직접 커밋한다. 브랜치·PR을 만들지 않는다.
-- 커밋 메시지: `<type>: <한국어 요약>` 한 줄. type은 `docs`, `feat`, `fix`. 본문에는 Phase 번호와 게이트 결과 한 줄(`verify: PASS (unittest 12, smoke 1-3)`)을 적는다. 마지막 줄에 `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` 를 포함한다.
+- 커밋 메시지: `<type>: <한국어 요약>` 한 줄. type은 `docs`, `feat`, `fix`. 본문에는 Phase 번호와 게이트 결과 한 줄(`verify: PASS (unittest 29, smoke 1, 3, 4, 5, 6, 7)`)을 적는다. 마지막 줄에 `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` 를 포함한다.
 - 작성자: 로컬 git 설정(`Cerhovah`)을 그대로 쓴다. `--author`로 바꾸지 않는다.
 - 푸시: 커밋 직후 `git push origin main` 1회. force push 금지. amend 금지(예비 커밋을 사용).
 - 커밋 전 확인: `git status`에 `data/`, `*.csv`(samples 제외), `__pycache__`, 백업이 없을 것.
