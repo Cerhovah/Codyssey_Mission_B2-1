@@ -1,594 +1,391 @@
-# budget_app — 나만의 용돈 기입장 (Codyssey Mission B2-1)
+# budget_app 나만의 용돈 기입장
 
-> Python 표준 라이브러리만으로 만드는 파일 기반 콘솔 가계부.
-> 제너레이터 스트리밍 · 데코레이터 · 타입 힌트 · 계층 분리 · 원자적 저장을 갖춘 "작은 서비스".
-> 이 저장소는 **명세 주도 개발(Spec-Driven Development)** 로 진행한다. 코드보다 문서가 먼저이고, 변경은 문서에서 시작한다.
+수입과 지출을 기록하고, 원하는 내역을 찾고, 한 달 동안 돈을 얼마나 썼는지 확인하는 **터미널 가계부**입니다. 터미널은 명령어를 입력해 프로그램을 사용하는 화면입니다.
 
-| 문서 | 역할 |
+Python 3.10 이상이면 실행할 수 있습니다. Python에 기본으로 들어 있는 기능만 사용하므로 `pip install`은 필요하지 않습니다. 기록은 내 컴퓨터의 파일에 남습니다.
+
+Codyssey Mission B2-1 과제로 만들었으며, 거래 관리 외에 백업과 반복 내역 기능을 제공합니다. 반복 내역은 사용자가 적용 명령을 실행할 때 만들어집니다.
+
+## 1 프로그램 소개
+
+### 1.1 할 수 있는 일
+
+| 하고 싶은 일 | 명령 |
 | --- | --- |
-| [docs/MISSION_SPEC.md](docs/MISSION_SPEC.md) | 과제 명세 **원문 보존** (수정 금지) |
-| `README.md` (이 문서) | 명세 심층 분석, 사용자 관점 사양(실행·저장·명령·CSV), 진행 현황 |
-| [AGENT.md](AGENT.md) | 개발 헌장, 모호성 결정표 D01~D44, 계층·계약, 9단계 커밋 계획, 검증 정책 |
+| 수입이나 지출 기록하기 | `add` |
+| 최근 거래 보기 | `list` |
+| 날짜·분류·메모·태그로 찾기 | `search` |
+| 월별 수입·지출·잔액 보기 | `summary` |
+| 월 지출 예산 정하고 조회하기 | `budget set`, `budget list` |
+| 식비·교통비 같은 분류 관리하기 | `category add`, `category list`, `category remove` |
+| 기록 수정하기 | `update` |
+| 기록 삭제하기 | `delete` |
+| CSV 파일에서 거래 가져오기 | `import` |
+| 거래를 CSV 파일로 내보내기 | `export` |
+| 저장 파일 복사본 만들기 | `backup` |
+| 매달 반복되는 거래의 규칙 관리하기 | `recurring add`, `recurring list`, `recurring remove`, `recurring apply` |
 
-진행 상태: **Phase 8 완료 — 10개 명령 + 보너스(테이블 정렬·backup) 구현·검증 완료**. 5장 "명령 예시"는 실제 실행 출력이다.
+`income`은 수입, `expense`는 지출입니다. 금액은 두 경우 모두 양수로 입력합니다. 지출이라는 구분이 있으므로 지출 금액 앞에 마이너스를 붙이지 않습니다.
 
----
+### 1.2 과제에서 다루는 핵심
 
-## 1. 미션 심층 분석
+이 과제는 가계부 기능과 함께 다음 설계를 연습합니다.
 
-### 1.1 한 줄 정의
+- **입력 검사**: 날짜·금액·카테고리가 올바른지 확인한 뒤 저장합니다.
+- **파일 저장**: 프로그램을 종료해도 기록이 남게 합니다.
+- **한 줄씩 읽기**: 거래 파일을 읽는 함수를 제너레이터로 만듭니다. 제너레이터는 필요할 때 다음 데이터를 하나씩 건네는 방식입니다.
+- **안전한 재작성**: 수정·삭제할 때 새 파일을 먼저 완성하고 기존 파일과 교체합니다.
+- **역할 나누기**: 명령 처리, 업무 규칙, 저장, 데이터 형식을 서로 다른 파일에 둡니다.
+- **공통 처리 묶기**: 오류 처리·로그·시간 측정을 데코레이터로 붙여 사용합니다.
+- **타입 표시**: 함수가 어떤 값을 받고 돌려주는지 코드에 적습니다. 실제 입력 검사는 별도 함수가 수행합니다.
 
-`python -m budget_app <command> [--options]` 로 동작하는 가계부 CLI. 거래(수입/지출)를 **JSONL 파일 4개**(transactions / categories / budgets / recurring)에 영구 저장하고, 10개 명령(add · list · search · summary · budget · category · update · delete · import · export)과 보너스 명령 backup · recurring 을 제공한다.
+### 1.3 요구사항 확인표
 
-### 1.2 명세가 실제로 평가하는 것
+R은 필수 요구사항, B는 선택 과제의 관리 번호입니다. 기능 사용을 먼저 익히려면 3장으로 이동해도 됩니다. 번호별 개발 규칙과 결정은 [AGENT.md](AGENT.md)에 있습니다.
 
-명세 1장의 첫 문장이 평가 기준의 핵심이다. "'작은 서비스'란 기능이 많은 게 아니라 **예외 상황에서도 데이터가 안전한 것**". 따라서 기능 개수보다 다음 네 가지 구조 품질이 점수를 가른다.
+<details>
+<summary>필수 요구사항 25개와 선택 과제 4개 펼쳐 보기</summary>
 
-| 평가 축 | 명세 근거 | 이 프로젝트의 대응 |
+| 번호 | 확인할 내용 | 담당 위치 |
 | --- | --- | --- |
-| 데이터 안전성 | 1장, 4장 6항 "임시 파일/원자적 교체(권장)", 보너스 4 | 모든 재작성은 임시 파일 + `os.replace`. 추가는 append 1줄. 저장 실패 시 원본 유지 |
-| 스트리밍 | 4장 5항·7항 "파일 전체를 한 번에 로드하지 않고" | 저장소 읽기는 전부 `yield` 제너레이터. list는 `heapq.nlargest(limit)`로 메모리 O(limit) |
-| 관심사 분리 | 4장 12항 데코레이터, 14항 모듈화, 3장 "각 계층의 책임" | `cli / services / repository / models / decorators / errors / formatting` 7모듈, 의존 방향 단방향 |
-| 계약 명확성 | 3장 "타입 힌트로 입출력 계약", 4장 13항 exit code | 전 함수 타입 힌트, `AppError(원인, 힌트)` 단일 오류 계약, exit code 0/1/2/130 고정 |
+| R01 | `python -m budget_app` 실행 | `__main__.py` |
+| R02 | 명령별 `--help` | `cli.py` |
+| R03 | `--`로 시작하는 옵션 | `cli.py` |
+| R04 | 거래 항목과 데이터 클래스 | `models.py` |
+| R05 | 클래스 2개 이상 사용 | 모델·저장소·서비스 |
+| R06 | 날짜·금액·타입·카테고리 검사 | `models.py`, `services.py` |
+| R07 | 저장 형식 하나 선택 | JSONL |
+| R08 | 저장 파일 3개 이상 | 현재 JSONL 4개 |
+| R09 | 저장 폴더 변경 | `--data-dir` |
+| R10 | 첫 실행 초기화 | `ensure_initialized` |
+| R11 | 질문에 답하며 거래 추가 | `add` |
+| R12 | 최신순 목록과 건수 제한 | `list` |
+| R13 | 거래 번호로 삭제 | `delete` |
+| R14 | 수정 방법 고정 | `update`의 옵션 방식 |
+| R15 | 수정·삭제 중 저장 안정성 | 임시 파일과 `os.replace` |
+| R16 | 조건 검색 | `search` |
+| R17 | 월별 합계와 지출 순위 | `summary` |
+| R18 | 예산 저장과 초과 경고 | `budget`, `summary` |
+| R19 | 카테고리 관리와 사용 중 삭제 처리 | `category` |
+| R20 | CSV 가져오기와 내보내기 | `import`, `export` |
+| R21 | 데코레이터를 정의하고 실제 사용 | `decorators.py` |
+| R22 | 오류 안내와 종료 코드 | `errors.py`, `decorators.py`, `cli.py` |
+| R23 | 모듈 분리 | `budget_app/` |
+| R24 | 실행·저장·명령·CSV 설명 | 이 README |
+| R25 | 표준 라이브러리만 사용 | 프로그램과 검증 스크립트 |
+| B1 | 백업 | `backup` |
+| B2 | 반복 내역 | `recurring` |
+| B3 | 출력 열 정렬 | `formatting.py` |
+| B4 | 파일을 완성한 뒤 교체 | `JsonlStore.rewrite` |
 
-### 1.3 요구사항 매트릭스
+</details>
 
-명세의 모든 요구를 ID로 고정하고, 어느 명령·모듈·개발 단계(Phase, [AGENT.md](AGENT.md) 9장)가 책임지는지 추적한다. 이 표가 "완료"의 정의다.
+## 2 개발 규칙을 정한 방법
 
-| ID | 요구사항 (명세 위치) | 명령 / 모듈 | Phase |
-| --- | --- | --- | --- |
-| R01 | `python -m budget_app <cmd>` 실행 (4-1) | `__main__.py`, `cli.py` | P1 |
-| R02 | 모든 명령 `--help` (4-1) | argparse 서브커맨드 전부 | P1 |
-| R03 | 옵션 표기 `--` 통일 (4-1, 7장) | `cli.py` 롱 옵션만 | P1 |
-| R04 | Transaction 필드 id/type/date/amount/category/memo/tags, dataclass (4-2) | `models.py` | P1 |
-| R05 | 클래스 2개 이상 (4-2) | `Transaction`, `Budget`, `JsonlStore`, `TransactionRepository`, `CategoryStore`, `BudgetStore`, `BudgetService` | P1~P2 |
-| R06 | 입력 검증: 날짜/금액/type/category (4-2) | `models.py` 검증 함수, `services.py` | P1, P3 |
-| R07 | JSONL 또는 CSV 1개 선택 (4-3) | JSONL (D01) | P2 |
-| R08 | 저장 파일 3개 이상 분리 (2-10, 4-3) | `transactions.jsonl`, `categories.jsonl`, `budgets.jsonl` + `recurring.jsonl`(B2) | P2, P9 |
-| R09 | 기본 `./data`, `--data-dir`로 변경 (4-3) | 전역 옵션 `--data-dir` | P1~P2 |
-| R10 | 초기 실행 시 자동 생성 + 안내 / 빈 카테고리 처리 (4-3) | 안 A 기본 카테고리 자동 생성 (D04) | P2 |
-| R11 | add 대화형, category 존재 검사, id 출력 (4-4) | `add` | P3 |
-| R12 | list 최신순, `--limit` 기본값, 스트리밍 (4-5) | `list` | P3 |
-| R13 | delete `--id`, 없는 id 메시지 (4-6) | `delete` | P5 |
-| R14 | update 방식 문서 고정 (4-6) | 옵션 기반 안 A (D03) | P5 |
-| R15 | update/delete 저장 안정성 (4-6, 보너스 4) | 임시 파일 + `os.replace` | P2, P5 |
-| R16 | search `--from/--to/--category/--type/--q/--tag`, 최신순, 스트리밍 (4-7) | `search` | P4 |
-| R17 | summary `--month`, 총수입/총지출/잔액, TOP N `--top`, 데이터 없음 (4-8) | `summary` | P4 |
-| R18 | budget set 영구 저장, summary에 사용률/초과 경고 (4-9) | `budget set/list`, `summary` | P4 |
-| R19 | category add/list/remove, 사용 중 카테고리 처리 (4-10) | `category`, `--replace` (D18) | P3, P5 |
-| R20 | import `--from`, export `--out` + 기간 조건 필수, CSV 스키마 고정 (4-11) | `import`, `export` | P6 |
-| R21 | 데코레이터 1개 이상 실제 적용 (4-12) | `handle_errors`, `log_call`, `timed` | P1 |
-| R22 | 스택트레이스 금지, 원인+힌트, exit code (4-13, 7장) | `errors.py`, `decorators.py` | P1 |
-| R23 | 모듈 3개 이상 분리 (4-14) | 7개 모듈 | P1 |
-| R24 | README: 실행 방법, 저장 위치/형식, 명령 예시, CSV 스키마 (2-10) | 이 문서 3~6장 | P0, P8 |
-| R25 | 표준 라이브러리만 (7장) | 테스트 러너도 `unittest` (D24) | 전체 |
-| B1 | (보너스) backup 타임스탬프 백업 | `backup` | P7 |
-| B2 | (보너스) 반복 내역 | `recurring add/list/remove/apply`, `recurring.jsonl` (D44) | P9 (예비 커밋) |
-| B3 | (보너스) 테이블 정렬 출력 | `formatting.py` | P7 |
-| B4 | (보너스) 저장 원자성 | R15와 동일 구현으로 자동 충족 | P2 |
+먼저 과제에서 필요한 기능을 확인하고, 애매한 동작을 정한 뒤 코드를 작성했습니다. 예를 들어 “최신순”은 거래 날짜가 늦은 순서로, 거래 수정은 옵션을 지정하는 방식으로 정했습니다. 동작을 바꿀 때는 관련 문서도 함께 바꾸는 규칙입니다. 이를 **명세 주도 개발**, 줄여서 SDD라고 부릅니다.
 
-### 1.4 숨은 요구와 모순 — 반드시 결정해야 했던 지점
-
-명세를 읽는 것만으로는 구현이 갈라지는 지점이 11곳 있었다. 명세 주도 개발에서는 이런 지점을 추측하지 않고 **결정표로 고정**한다. 전체 결정은 [AGENT.md 4장](AGENT.md) D01~D44에 있고, 여기서는 왜 그 결정인지 핵심만 적는다.
-
-1. **"최신순"과 "스트리밍"은 서로 당긴다.** 최신순 정렬은 원칙적으로 전체를 봐야 하지만, 명세는 전체 로드를 금지한다. 해법은 `heapq.nlargest(limit, 제너레이터)`. 파일은 한 줄씩 흐르고 메모리는 limit개만 유지한다. search는 필터를 통과한 부분집합만 정렬한다 (D07).
-2. **옵션 표기가 명세 안에서 흔들린다.** 본문에 `-limit`, `-from`, `-top`, `-data-dir`가 섞여 있지만 4장 1항이 `--` 통일을 명시한다. 마크다운 변환 손실로 판단하고 **롱 옵션만** 제공한다 (D02).
-3. **update는 옵션 방식(안 A)으로 고정.** 대화형보다 스크립트·테스트가 쉽고 검증 단위가 줄어든다. 사용자가 고정 방식을 문서에서 확인할 수 있어야 한다는 명세 요구는 이 문서 5장이 충족한다 (D03).
-4. **빈 카테고리는 기본 카테고리 자동 생성(안 A).** 첫 실행에서 바로 `add`가 되어야 "작은 서비스"답고, 예시 화면의 `salary`도 포함해 `food, transport, rent, salary, etc` 5개를 만든다 (D04).
-5. **JSONL을 선택.** `tags`가 리스트이고 `memo`에 쉼표가 들어가므로 CSV는 이스케이프 부담이 크다. JSONL은 1줄 append와 제너레이터 읽기가 자연스럽다. CSV는 import/export 교환 포맷으로만 쓴다 (D01).
-6. **id는 `TX-` + 6자리 순번.** 다음 번호는 파일을 스트리밍하며 구한 최대값 + 1. 별도 카운터 파일을 두지 않아 저장 파일을 3개로 유지한다. 유일성은 항상 보장된다 (D05).
-7. **금액은 양의 정수만.** CSV 스키마가 "양수 정수"로 못 박았으므로 입력도 동일하게 맞춘다. `15000.5`, `1,000` 은 거부한다 (D08).
-8. **"없는 id"는 오류다.** 메시지를 내고 exit code 1로 끝낸다. 명세 4장 13항 "오류 종료는 0이 아닌 값"과 일관된다 (D13, D14).
-9. **대화형과 옵션형은 실패 처리가 다르다.** 대화형은 `[오류]`+`[힌트]` 후 재입력, 옵션형은 즉시 종료 코드 1. Ctrl+C는 130 (D13).
-10. **카테고리 삭제는 기본 차단, `--replace`로 재배정.** 명세의 두 선택지("막거나" / "대체 요구")를 하나의 명령으로 모두 만족시킨다 (D18).
-11. **테스트도 표준 라이브러리.** `pytest`는 `pip install`이 필요하므로 제약 위반이다. `unittest` + 단일 검증 스크립트를 쓴다 (D24).
-
-### 1.5 위험 요소
-
-| 위험 | 영향 | 완화 |
-| --- | --- | --- |
-| Windows 콘솔 인코딩 (cp949) | 한글 출력·입력 깨짐 | 시작 시 `sys.stdout/stdin.reconfigure(encoding="utf-8")` 시도, 파일 I/O는 항상 `encoding="utf-8"` (D30) |
-| 대화형 `input()` 테스트 불가 | 검증 비용 급증 | 서비스가 `input_fn: Callable[[str], str]` 를 주입받음. 테스트는 큐에서 꺼냄 |
-| 재작성 도중 중단 | 데이터 손실 | 임시 파일에 완전히 쓴 뒤 `os.replace`. 원본은 마지막 순간까지 건드리지 않음 |
-| 명세 과잉 해석 | 범위 폭발, 커밋 수 초과 | 결정표에 없는 기능은 만들지 않음. 보너스는 P7 한 단계로 제한 |
-
----
-
-## 2. 명세 주도 개발 적용 방식
-
-Spec Kit, Kiro, Tessl을 비교한 Birgitta Böckeler의 에세이는 명세의 역할을 세 단계로 나눈다. **spec-first**(명세가 이번 작업을 이끈다), **spec-anchored**(명세를 코드와 함께 유지·갱신한다), **spec-as-source**(사람은 명세만 고친다). 이 프로젝트는 **spec-first로 시작해 spec-anchored로 유지**한다. 코드만 고치고 문서를 방치하는 순간 문서는 거짓이 되므로, 동작 변경은 반드시 결정표(AGENT.md) 또는 이 문서의 사양을 먼저 고친 뒤 코드에 반영한다.
-
-같은 에세이와 Thoughtworks 팟캐스트가 경고한 함정도 그대로 받아들인다. 작은 과제에 수십 개의 마크다운을 만드는 "sledgehammer to crack a nut", 사람이 읽지 않는 산출물, 큰 사전 계획이 작은 반복을 밀어내는 문제다. 그래서 문서는 **세 개**로 고정하고(원문 / README / AGENT), 작업은 9개 Phase로 크게 묶되 각 Phase는 **검증 게이트 하나**로 끝낸다.
-
-GitHub Spec Kit의 네 단계(Specify → Plan → Tasks → Implement)는 이 저장소에서 다음과 같이 대응한다.
-
-| Spec Kit 단계 | 이 저장소 |
+| 문서 | 담긴 내용 |
 | --- | --- |
-| Constitution (불변 원칙) | AGENT.md 3장 "헌장" |
-| Specify (무엇을, 왜) | docs/MISSION_SPEC.md + README 1장 분석 + `[NEEDS CLARIFICATION]` 대신 결정표 D01~D44 |
-| Plan (어떻게) | AGENT.md 5~8장 계층·데이터 계약·CLI 계약·오류 규약 |
-| Tasks (작게 나눠 검증) | AGENT.md 9장 Phase 0~8 + 예비(P9), 각 1커밋 1푸시 1게이트 |
-| Implement | Phase 순서대로, 게이트 통과 후에만 다음 단계 |
+| [docs/MISSION_SPEC.md](docs/MISSION_SPEC.md) | 과제 원문 |
+| `README.md` | 프로그램 소개와 사용법 |
+| [AGENT.md](AGENT.md) | 개발 규칙, 세부 결정 D01~D44, 개발 단계와 검증 방법 |
 
-참고한 원문:
+R01 같은 표시는 요구사항 번호, D01 같은 표시는 결정 번호, P0 같은 표시는 개발 단계입니다. 프로그램에 입력하는 명령어는 아닙니다.
 
-- Birgitta Böckeler, [Understanding Spec-Driven-Development: Kiro, spec-kit, and Tessl](https://www.martinfowler.com/articles/exploring-gen-ai/sdd-3-tools.html) (martinfowler.com, 2025-10)
-- GitHub, [spec-kit / spec-driven.md](https://github.com/github/spec-kit/blob/main/spec-driven.md) — "Specifications don't serve code—code serves specifications"
-- Den Delimarsky, [Spec-driven development with AI: Get started with a new open source toolkit](https://github.blog/ai-and-ml/generative-ai/spec-driven-development-with-ai-get-started-with-a-new-open-source-toolkit/) (GitHub Blog, 2025-09)
-- Thoughtworks Technology Podcast, [What is spec-driven development?](https://www.thoughtworks.com/insights/podcasts/technology-podcasts/what-is-spec-driven-development)
-- Atlassian, [Spec-driven development with Rovo Dev](https://www.atlassian.com/blog/developer/spec-driven-development-with-rovo-dev) — "Break large requests into small, verifiable steps and present a plan"
-- PyTorch Korea, [[Deep Research] GitHub의 Spec Kit으로 알아보는 SDD](https://discuss.pytorch.kr/t/deep-research-github-spec-kit-spec-driven-development-sdd-feat-vibe-coding/7689) — TDD/BDD/SDD 비교, 과도한 명세화 경고
+## 3 실행 방법
 
----
+Python 3.10 이상과 Git이 준비된 환경에서 다음 명령을 실행합니다.
 
-## 3. 실행 방법
-
-요구 사항: **Python 3.10 이상**, 외부 패키지 없음 (`pip install` 불필요).
-
-```bash
+```powershell
 git clone https://github.com/Cerhovah/Codyssey_Mission_B2-1.git
 cd Codyssey_Mission_B2-1
+python --version
 python -m budget_app --help
 ```
 
-저장 폴더는 기본 `./data` 이며 첫 실행 시 자동 생성된다. 다른 위치를 쓰려면 전역 옵션을 **서브커맨드 앞에** 둔다.
+명령은 `budget_app` 폴더가 들어 있는 **저장소 최상위 폴더**에서 실행합니다. 기본 형식은 다음과 같습니다.
 
-```bash
+```text
+python -m budget_app 명령 옵션
+```
+
+도움말은 명령 뒤에 `--help`를 붙여 봅니다.
+
+```powershell
+python -m budget_app search --help
+```
+
+저장 위치를 바꾸려면 `--data-dir`를 **명령 앞**에 둡니다.
+
+```powershell
 python -m budget_app --data-dir ./my_data list
 ```
 
-상세 로그가 필요하면 `--verbose` 를 함께 준다 (stderr로 DEBUG 로그, 실행 시간 포함).
+기본 저장 위치는 명령을 실행한 현재 폴더의 `data`입니다. 다른 폴더를 지정하면 그 폴더의 별도 기록을 사용합니다. 도움말과 사용법 오류를 제외한 명령은 실행 시 필요한 저장 파일을 초기화합니다.
 
-검증(개발자용) — 표준 라이브러리만 사용:
+## 4 저장 파일 위치와 형식
 
-```bash
-python scripts/verify.py
+| 기본 경로 | 들어 있는 내용 |
+| --- | --- |
+| `data/transactions.jsonl` | 실제 수입·지출 기록 |
+| `data/categories.jsonl` | 사용할 수 있는 카테고리 이름 |
+| `data/budgets.jsonl` | 월별 지출 예산 |
+| `data/recurring.jsonl` | 반복 거래를 만들기 위한 규칙 |
+
+**JSONL은 한 줄에 데이터 한 건을 적는 텍스트 형식**입니다. 거래 한 건은 다음처럼 저장됩니다.
+
+```json
+{"id":"TX-000001","type":"expense","date":"2026-10-18","amount":5000,"category":"food","memo":"점심","tags":["meal"]}
 ```
 
----
+`id`는 거래를 찾을 때 쓰는 번호, `date`는 거래 날짜, `amount`는 금액, `category`는 분류, `memo`는 메모, `tags`는 검색용 꼬리표입니다.
 
-## 4. 저장 파일 위치와 형식
+첫 실행 시 폴더와 파일 4개를 만들고 초기화 안내를 출력합니다. 카테고리 파일이 비어 있으면 `food`, `transport`, `rent`, `salary`, `etc`를 등록합니다. 한글은 UTF-8로 저장합니다.
 
-| 파일 | 내용 | 1줄 = 1레코드 예시 |
-| --- | --- | --- |
-| `data/transactions.jsonl` | 거래 내역 | `{"id":"TX-000012","type":"expense","date":"2024-01-15","amount":15000,"category":"food","memo":"점심","tags":["meal"]}` |
-| `data/categories.jsonl` | 카테고리 | `{"name":"food"}` |
-| `data/budgets.jsonl` | 월 예산 | `{"month":"2024-01","amount":500000}` |
-| `data/recurring.jsonl` | 반복 내역 규칙 (보너스 B2, D44) | `{"id":"RC-000001","day":25,"type":"income","category":"salary","amount":3000000,"memo":"월급","tags":[]}` |
+새 거래는 파일 끝에 추가합니다. 기존 JSONL 파일의 수정·삭제·재배정은 임시 파일에 내용을 완성한 뒤 `os.replace`로 교체합니다. 이 보호는 **개별 파일의 재작성**에 적용됩니다. CSV 가져오기 전체나 여러 파일을 한꺼번에 되돌리는 기능은 없습니다.
 
-- 포맷: **JSONL** (JSON Lines). UTF-8, LF, 한 줄에 JSON 객체 하나. `ensure_ascii=False`로 한글을 그대로 저장한다.
-- 읽기: 항상 제너레이터로 한 줄씩. 빈 줄은 건너뛴다.
-- 추가: 파일 끝에 1줄 append.
-- 수정·삭제·재배정: 같은 폴더의 임시 파일에 전체를 다시 쓴 뒤 `os.replace`로 교체한다 (원자적 교체).
-- 첫 실행: 폴더와 파일 4개를 만들고 `[안내] 저장 폴더를 초기화했습니다: ./data` 를 출력한다. 카테고리 파일이 비어 있으면 기본 카테고리 `food, transport, rent, salary, etc` 를 자동 등록한다.
-- 백업(보너스): `backup` 실행 시 `data/backups/YYYYMMDD-HHMMSS/` 아래에 4개 파일을 복사한다. 같은 초에 다시 실행하면 `-1`, `-2` 접미사를 붙여 덮어쓰지 않는다.
+## 5 주요 명령 사용법
 
-`data/` 는 `.gitignore` 대상이다. 저장소에는 샘플 CSV만 `samples/` 에 둔다.
+아래 예시는 용도별로 독립적입니다. 예시의 거래 번호는 실제 `list` 결과의 번호로 바꾸어 사용합니다.
 
----
-
-## 5. 명령 예시
-
-모든 명령은 `--help`를 지원한다. 옵션은 전부 `--` 롱 옵션이다. 아래 출력은 Phase 8에서 빈 폴더(`--data-dir data`)에 이 순서대로 실제 실행해 얻은 결과를 그대로 옮긴 것이다(Windows 에서 실행해 경로 구분자가 `\`로 보인다. Linux/macOS 에서는 `/`). 첫 명령에서만 `[안내] 저장 폴더를 초기화했습니다: data` 가 한 줄 먼저 출력된다.
-
-### 5.1 add — 거래 추가 (대화형)
+### 5.1 add 거래 추가
 
 ```text
-$ python -m budget_app add
-[안내] 저장 폴더를 초기화했습니다: data
-날짜(YYYY-MM-DD): 2024-01-05
+python -m budget_app add
+날짜(YYYY-MM-DD): 2026-10-18
 타입(income/expense): expense
-카테고리: rent
-금액(양수 정수): 150000
-메모(선택): 1월 월세
-태그(쉼표로 구분, 없으면 엔터):
+카테고리: food
+금액(양수 정수): 5000
+메모(선택): 점심
+태그(쉼표로 구분, 없으면 엔터): meal
 [저장 완료] id=TX-000001
 ```
 
-같은 방식으로 `TX-000002`(2024-01-12 transport 20000 버스 #commute), `TX-000003`(2024-01-14 income salary 3000000 월급), `TX-000004`(2024-01-15 food 15000 점심 #meal), `TX-000005`(2024-01-20 food 30000 저녁 #meal,family) 를 추가했다.
+처음 실행하면 질문 전에 초기화 안내가 한 줄 나옵니다. 거래 번호는 저장된 기록에 따라 달라집니다.
 
-잘못 입력하면 `[오류]`와 `[힌트]`를 보여주고 **같은 항목만** 다시 묻는다. 없는 카테고리를 입력하면 등록된 목록을 보여주고 재입력을 요구한다.
+날짜는 `2026-10-18`처럼 씁니다. 금액은 `5000`처럼 양의 정수로 입력합니다. `0`, `-5000`, `5,000`, `5000.5`는 사용할 수 없습니다. 메모와 태그는 엔터만 눌러 비워도 됩니다.
 
-```text
-$ python -m budget_app category add cafe
-[저장 완료] category=cafe
+잘못된 값을 입력하면 이유와 힌트를 보여주고 같은 항목을 다시 묻습니다. 태그는 쉼표로 구분하며, 앞뒤 공백·빈 항목·같은 태그의 중복을 제거합니다. 질문에 답하는 도중 Ctrl+C나 입력 종료로 중단하면 해당 거래를 저장하지 않고 종료 코드 130으로 끝납니다.
 
-$ python -m budget_app add
-날짜(YYYY-MM-DD): 2024-13-40
-[오류] 존재하지 않는 날짜입니다: 2024-13-40
-[힌트] 예: 2024-01-15
-날짜(YYYY-MM-DD): 2024-01-22
-타입(income/expense): expense
-카테고리: coffee
-[오류] 등록되지 않은 카테고리입니다: coffee
-[힌트] 등록된 카테고리: cafe, etc, food, rent, salary, transport (추가: python -m budget_app category add <이름>)
-카테고리: cafe
-금액(양수 정수): 4500
-메모(선택): 커피
-태그(쉼표로 구분, 없으면 엔터):
-[저장 완료] id=TX-000006
+### 5.2 list 최근 거래 조회
+
+```powershell
+python -m budget_app list --limit 3
 ```
 
-Ctrl+C 또는 입력 종료(EOF)로 중단하면 저장하지 않고 종료 코드 130으로 끝난다.
+최대 3건을 거래 날짜가 늦은 순서로 보여줍니다. 같은 날짜이면 거래 ID 문자열의 역순입니다. `--limit`를 생략하면 최대 20건입니다.
 
-```text
-$ python -m budget_app add
-날짜(YYYY-MM-DD): 2024-01-23
-타입(income/expense): ^C
+출력 항목은 `번호 | 날짜 | 수입·지출 구분 | 카테고리 | 금액 | 메모`입니다. 태그는 목록 열에 표시하지 않습니다. 거래가 없으면 안내를 출력합니다.
 
-[안내] 중단했습니다
+### 5.3 search 조건 검색
+
+```powershell
+python -m budget_app search --category food --q 점심 --limit 10
 ```
 
-### 5.2 list — 최신순 목록
+`food` 카테고리이면서 메모에 `점심`이 들어 있는 거래를 최대 10건 찾습니다. 여러 조건을 주면 **모두 만족하는 거래**만 나옵니다.
 
-```text
-$ python -m budget_app list --limit 3
-TX-000006 | 2024-01-22 | expense | cafe |  4500 | 커피
-TX-000005 | 2024-01-20 | expense | food | 30000 | 저녁
-TX-000004 | 2024-01-15 | expense | food | 15000 | 점심
+| 옵션 | 찾는 기준 |
+| --- | --- |
+| `--from YYYY-MM-DD` | 이 날짜부터 포함 |
+| `--to YYYY-MM-DD` | 이 날짜까지 포함 |
+| `--category NAME` | 카테고리 이름이 정확히 일치 |
+| `--type income` 또는 `--type expense` | 수입 또는 지출 |
+| `--q TEXT` | 메모에 해당 글자가 포함됨. 영문 대소문자 무시 |
+| `--tag TAG` | 태그가 정확히 일치 |
+| `--limit N` | 최대 출력 건수. 생략하면 제한 없음 |
+
+카테고리와 태그는 대소문자를 구분합니다. 해당 조건의 기록이 없으면 0건 안내를 출력하고 정상 종료합니다. 검색 결과를 많이 모으면 메모리도 많이 사용하므로 필요한 경우 `--limit`를 지정합니다.
+
+### 5.4 summary 월별 요약
+
+```powershell
+python -m budget_app summary --month 2026-10 --top 3
 ```
 
-`--limit` 기본값 20. 정렬은 날짜 내림차순, 같은 날짜는 id 내림차순. 열 너비는 출력되는 행에 맞춰 정렬되고 금액은 우정렬이다(보너스 3, D42). 거래가 없으면 `[안내] 거래가 없습니다`.
+해당 월의 총수입, 총지출, 잔액과 지출이 큰 카테고리 3개를 보여줍니다. `--top`을 생략하면 상위 5개입니다. 같은 지출 금액이면 카테고리 이름순입니다.
 
-### 5.3 search — 조건 검색 (모든 조건은 AND)
+잔액은 **선택한 달의 수입 − 지출**입니다. 이전 달 이월금이나 실제 은행 잔고를 뜻하지 않습니다. 예산이 있으면 `총지출 ÷ 예산 × 100`으로 사용률을 계산하고, 지출이 예산보다 많으면 초과 금액을 경고합니다. 거래가 없는 달은 `데이터 없음`으로 표시합니다.
 
-```text
-$ python -m budget_app search --from 2024-01-01 --to 2024-01-31 --type expense
-TX-000006 | 2024-01-22 | expense | cafe      |   4500 | 커피
-TX-000005 | 2024-01-20 | expense | food      |  30000 | 저녁
-TX-000004 | 2024-01-15 | expense | food      |  15000 | 점심
-TX-000002 | 2024-01-12 | expense | transport |  20000 | 버스
-TX-000001 | 2024-01-05 | expense | rent      | 150000 | 1월 월세
+### 5.5 budget 월 예산
 
-$ python -m budget_app search --category food --q 점심
-TX-000004 | 2024-01-15 | expense | food | 15000 | 점심
-
-$ python -m budget_app search --tag meal --limit 10
-TX-000005 | 2024-01-20 | expense | food | 30000 | 저녁
-TX-000004 | 2024-01-15 | expense | food | 15000 | 점심
-
-$ python -m budget_app search --tag 없는태그
-[안내] 조건에 맞는 거래가 없습니다
+```powershell
+python -m budget_app budget set --month 2026-10 --amount 100000
+python -m budget_app budget list
 ```
 
-`--q`는 메모 부분 일치(대소문자 무시), `--tag`는 태그 정확 일치, `--from/--to`는 포함 범위. 날짜 형식이 틀리면 종료 코드 1:
+예산은 한 달 동안 쓸 지출 한도입니다. 같은 달에 다시 설정하면 기존 금액을 바꿉니다. 목록은 월이 빠른 순서입니다. 예산 초과는 `summary`에서 경고하며, 추가 기록을 막지는 않습니다.
 
-```text
-$ python -m budget_app search --from 2024-1-5
-[오류] 날짜 형식이 올바르지 않습니다 (YYYY-MM-DD).
-[힌트] 예: 2024-01-15
+### 5.6 category 카테고리 관리
+
+```powershell
+python -m budget_app category add cafe
+python -m budget_app category list
+python -m budget_app category remove --name cafe --replace etc
 ```
 
-### 5.4 summary — 월별 요약
+`category add`에서 이름을 생략하면 질문으로 이름을 받습니다. 이미 있는 이름은 다시 등록할 수 없습니다. 이름의 대소문자를 구분하므로 `Food`와 `food`는 다른 카테고리입니다.
 
-아래는 5.5의 `budget set --month 2024-01 --amount 500000` 이후의 출력이다.
+거래가 사용하는 카테고리는 바로 삭제할 수 없습니다. `--replace etc`를 지정하면 해당 거래의 분류를 `etc`로 옮긴 뒤 카테고리를 삭제합니다. 사용한 거래가 없으면 `--replace` 없이 삭제할 수 있습니다.
 
-```text
-$ python -m budget_app summary --month 2024-01 --top 3
-총 수입: 3000000원
-총 지출: 219500원
-잔액: 2780500원
-예산: 500000원 (사용률 43.9%)
+이 처리는 실제 거래를 기준으로 합니다. 반복 규칙의 카테고리는 옮겨주지 않습니다. 삭제된 카테고리를 사용하는 반복 규칙은 이후 `apply`에서 건너뜁니다.
 
-지출 TOP 3
-1) rent 150000원
-2) food 45000원
-3) transport 20000원
+### 5.7 update 거래 수정
+
+```powershell
+python -m budget_app update --id TX-000001 --amount 6000
 ```
 
-- `--top` 기본값 5. 지출 합계 내림차순, 같으면 이름 오름차순.
-- 예산을 지출보다 작게 잡으면(`budget set --month 2024-01 --amount 200000`) 예산 줄 다음에 경고가 붙는다.
+수정은 질문에 답하는 방식이 아니라 **바꿀 값을 옵션으로 지정하는 방식**입니다. `--date`, `--type`, `--category`, `--amount`, `--memo`, `--tags` 중 하나 이상을 지정합니다. 지정하지 않은 항목은 유지합니다. 없는 거래 번호나 잘못된 값이면 거래 파일을 바꾸지 않습니다.
 
-```text
-$ python -m budget_app summary --month 2024-01 --top 3
-총 수입: 3000000원
-총 지출: 219500원
-잔액: 2780500원
-예산: 200000원 (사용률 109.7%)
-[경고] 예산 초과: +19500원
+프로그램은 빈 문자열 값을 받은 경우 `--memo`와 `--tags`를 비우도록 구현되어 있습니다. 셸에 따라 빈 따옴표 인자의 전달 방식이 다를 수 있습니다.
 
-지출 TOP 3
-1) rent 150000원
-2) food 45000원
-3) transport 20000원
+### 5.8 delete 거래 삭제
+
+```powershell
+python -m budget_app delete --id TX-000001
 ```
 
-- 해당 월 거래가 0건이면 `데이터 없음`을 출력하고 0으로 종료한다. 예산이 있으면 예산 줄만 추가로 보여 준다.
+해당 거래만 삭제합니다. 없는 번호이면 오류로 끝납니다. 실행 전 `list`로 번호를 확인합니다.
 
-```text
-$ python -m budget_app summary --month 2024-02
-[안내] 2024-02 데이터 없음
-예산: 300000원 (사용률 0.0%)
+### 5.9 import와 export CSV 교환
 
-$ python -m budget_app summary --month 2024-03
-[안내] 2024-03 데이터 없음
+```powershell
+python -m budget_app import --from samples/import_sample.csv
 ```
 
-### 5.5 budget — 월 예산
+올바른 행만 저장하고, 잘못된 행은 번호와 이유를 알려줍니다. 저장소에 포함된 샘플은 일부러 잘못된 금액 한 행을 넣었으므로 `imported=5, skipped=1`이 나옵니다. 같은 파일을 다시 가져오면 같은 내용도 새 거래로 등록됩니다.
 
-```text
-$ python -m budget_app budget set --month 2024-01 --amount 500000
-[저장 완료] 2024-01 예산 500000원
-
-$ python -m budget_app budget set --month 2024-02 --amount 300000
-[저장 완료] 2024-02 예산 300000원
-
-$ python -m budget_app budget list
-2024-01 | 500000원
-2024-02 | 300000원
+```powershell
+python -m budget_app export --out october.csv --month 2026-10
 ```
 
-같은 달에 다시 `set` 하면 덮어쓴다. `budget list`는 월 오름차순이고 설정이 없으면 `[안내] 설정된 예산이 없습니다`.
+기간은 `--month` 또는 `--from`·`--to` 중 하나 이상을 지정합니다. 시작일만 또는 종료일만 지정할 수도 있습니다. 월과 날짜 범위를 함께 지정하면 두 조건을 모두 만족하는 거래를 내보냅니다. 0건이면 헤더만 있는 CSV를 만듭니다. 출력 폴더는 미리 존재해야 합니다. 열 규칙은 6장을 참고합니다.
 
-### 5.6 category — 카테고리 관리
+### 5.10 backup 백업
 
-```text
-$ python -m budget_app category add
-카테고리명: book
-[저장 완료] category=book
-
-$ python -m budget_app category list
-- book
-- cafe
-- etc
-- food
-- rent
-- salary
-- transport
-
-$ python -m budget_app category remove --name cafe
-[오류] 'cafe'를 사용하는 거래가 1건 있어 삭제할 수 없습니다.
-[힌트] --replace <대체카테고리> 를 지정하면 해당 거래를 옮긴 뒤 삭제합니다.
-
-$ python -m budget_app category remove --name cafe --replace etc
-[완료] 거래 1건을 'etc'로 이동하고 category=cafe 를 삭제했습니다.
-
-$ python -m budget_app category remove --name book
-[삭제 완료] category=book
+```powershell
+python -m budget_app backup
 ```
 
-위치 인자(`category add cafe`)도 허용된다(5.1 참고). 첫 실행 시 기본 카테고리 `etc, food, rent, salary, transport` 가 자동 등록된다. 중복 등록, 없는 카테고리 삭제, 대체 카테고리가 없거나 자기 자신인 경우는 종료 코드 1이다.
+`data/backups/날짜-시각/`에 JSONL 파일 4개의 복사본을 만듭니다. 같은 이름의 폴더가 있으면 `-1`, `-2` 등을 붙여 기존 백업을 덮어쓰지 않습니다. 자동 복구 명령은 없으며 복구할 때는 프로그램을 종료한 상태에서 필요한 백업 파일을 되돌려 놓습니다.
 
-### 5.7 update — 옵션 기반 수정 (안 A로 고정)
+### 5.11 recurring 반복 내역
 
-```text
-$ python -m budget_app update --id TX-000004 --amount 18000 --memo 점심+커피
-[수정 완료] id=TX-000004
-
-$ python -m budget_app update --id TX-999999 --amount 1
-[오류] 거래를 찾을 수 없습니다: TX-999999
-[힌트] python -m budget_app list 로 id를 확인하세요.
-
-$ python -m budget_app update --id TX-000004
-usage: python -m budget_app update [--help] --id ID [--date YYYY-MM-DD]
-                                   [--type TYPE] [--category NAME]
-                                   [--amount AMOUNT] [--memo TEXT]
-                                   [--tags A,B]
-python -m budget_app update: error: 수정할 옵션을 최소 하나 지정하세요: --date --type --category --amount --memo --tags
+```powershell
+python -m budget_app recurring add
 ```
 
-수정 가능 옵션: `--date --type --category --amount --memo --tags`. 최소 하나는 필요하며(없으면 종료 코드 2), 각 값은 add와 같은 검증을 거친다(실패 시 종료 코드 1, 파일은 바뀌지 않음). `--tags ""` 로 태그를, `--memo ""` 로 메모를 비울 수 있다.
+매월 며칠인지, 수입인지 지출인지, 카테고리·금액·메모·태그가 무엇인지 질문합니다. 날짜의 일은 1~31입니다. 저장되는 것은 실제 거래가 아니라 **거래를 만들 규칙**입니다.
 
-### 5.8 delete — 삭제
-
-```text
-$ python -m budget_app delete --id TX-000006
-[삭제 완료] id=TX-000006
-
-$ python -m budget_app delete --id TX-000006
-[오류] 거래를 찾을 수 없습니다: TX-000006
-[힌트] python -m budget_app list 로 id를 확인하세요.
+```powershell
+python -m budget_app recurring list
+python -m budget_app recurring apply --month 2026-10
+python -m budget_app recurring remove --id RC-000001
 ```
 
-없는 id는 update와 동일한 오류 + 종료 코드 1.
+`apply`를 직접 실행해야 해당 월의 거래가 생성됩니다. 31일 규칙을 30일까지 있는 달에 적용하면 30일로 조정합니다. 생성 거래에 `rc:RC-000001` 같은 태그를 붙이고, 같은 월에 그 표식이 있으면 다시 생성하지 않습니다. `created`는 생성 건수, `skipped`는 건너뛴 규칙 수입니다.
 
-### 5.9 export / import — CSV
+규칙을 삭제해도 이미 생성된 거래는 남습니다. 표식 태그나 거래 날짜를 바꾸거나 해당 거래를 삭제하면 중복 판단도 달라집니다. 규칙 번호 재사용의 영향은 9.1장을 참고합니다.
 
-```text
-$ python -m budget_app export --out export.csv --month 2024-01
-[완료] export.csv (5 records)
+### 5.12 verbose 상세 로그
 
-$ python -m budget_app export --out q1.csv --from 2024-01-01 --to 2024-03-31
-[완료] q1.csv (5 records)
-
-$ python -m budget_app export --out x.csv
-usage: python -m budget_app export [--help] --out CSV [--month YYYY-MM]
-                                   [--from YYYY-MM-DD] [--to YYYY-MM-DD]
-python -m budget_app export: error: 기간 조건이 필요합니다: --month YYYY-MM 또는 --from/--to YYYY-MM-DD
-
-$ python -m budget_app import --from samples/import_sample.csv
-[완료] imported=5, skipped=1
-  - 3행: 금액은 양의 정수여야 합니다 (입력: -500)
+```powershell
+python -m budget_app --verbose list --limit 1
 ```
 
-위 `export.csv` 의 내용(최신순, id 제외, 태그는 쉼표 결합):
+함수 호출과 처리 시간을 표시합니다. 결과는 stdout, 로그는 stderr로 출력합니다. 둘 다 터미널에서 보일 수 있지만 다른 출력 통로입니다. 로그에는 호출 인자의 일부가 포함될 수 있습니다.
+
+## 6 CSV 파일 규칙
+
+CSV는 표 형태의 데이터를 주고받는 파일입니다. 이 프로그램의 내부 저장 형식은 JSONL이고, CSV는 가져오기와 내보내기에 사용합니다.
+
+| 열 이름 | 값 필수 여부 | 내용 |
+| --- | --- | --- |
+| `date` | 필수 | `YYYY-MM-DD` 형식의 실제 날짜 |
+| `type` | 필수 | `income` 또는 `expense`. 입력 시 영문 대소문자와 앞뒤 공백 정리 |
+| `category` | 필수 | 미리 등록한 카테고리 |
+| `amount` | 필수 | 0보다 큰 정수 |
+| `memo` | 비워도 됨 | 메모 |
+| `tags` | 비워도 됨 | 쉼표로 구분한 태그 |
 
 ```csv
 date,type,category,amount,memo,tags
-2024-01-20,expense,food,30000,저녁,"meal,family"
-2024-01-15,expense,food,18000,점심+커피,meal
-2024-01-14,income,salary,3000000,월급,
-2024-01-12,expense,transport,20000,버스,commute
-2024-01-05,expense,rent,150000,1월 월세,
+2026-10-18,expense,food,5000,점심,meal
 ```
 
-export는 `--month` 또는 `--from/--to` 중 하나 이상이 **필수**다(둘 다 주면 AND). 조건이 없으면 사용법 오류(종료 코드 2). 0건이어도 헤더만 있는 파일을 만든다. import 는 유효한 행만 저장하고 실패한 행은 번호와 사유를 보고하며, 미등록 카테고리 행은 건너뛴다(자동 생성하지 않음).
+- **헤더에는 여섯 열 이름이 모두 있어야 합니다.** 메모와 태그는 열 자체를 빼는 것이 아니라 값을 비웁니다.
+- 가져오기는 UTF-8과 UTF-8 BOM을 허용합니다. 열 순서가 달라도 되며, 추가 열은 무시합니다.
+- 내보내기는 위 표의 순서로 UTF-8 BOM 없이 저장합니다.
+- 태그 여러 개는 `"meal,daily"`처럼 따옴표로 감싸 한 칸에 넣습니다. 쉼표나 줄바꿈이 있는 메모도 CSV 따옴표 규칙을 따릅니다.
+- `id`는 내보내지 않습니다. 가져올 때 새 거래 번호를 발급합니다.
+- 일부 행을 건너뛰어도 명령은 종료 코드 0으로 끝날 수 있으므로 `skipped`와 사유를 확인합니다. 저장 중 파일 오류가 나면 앞서 저장된 행은 남을 수 있습니다.
 
-### 5.10 backup (보너스)
+## 7 오류 안내와 종료 코드
 
-```text
-$ python -m budget_app backup
-[완료] data\backups\20261018-203507 (4 files)
-```
-
-`transactions.jsonl`, `categories.jsonl`, `budgets.jsonl`, `recurring.jsonl` 네 파일을 타임스탬프 폴더에 복사한다. 같은 초에 다시 실행하면 `-1`, `-2` 접미사를 붙여 덮어쓰지 않는다.
-
-### 5.11 recurring — 반복 내역 (보너스)
-
-반복되는 수입·지출(월급, 월세 등)을 규칙으로 등록해 두고, 달마다 `apply` 로 거래를 한 번에 만든다(D44). 규칙 파일은 `data/recurring.jsonl`.
-
-```text
-$ python -m budget_app recurring add
-매월 며칠(1~31): 25
-타입(income/expense): income
-카테고리: salary
-금액(양수 정수): 3000000
-메모(선택): 월급
-태그(쉼표로 구분, 없으면 엔터):
-[저장 완료] id=RC-000001
-
-$ python -m budget_app recurring add
-매월 며칠(1~31): 31
-타입(income/expense): expense
-카테고리: rent
-금액(양수 정수): 500000
-메모(선택): 월세
-태그(쉼표로 구분, 없으면 엔터): fixed
-[저장 완료] id=RC-000002
-
-$ python -m budget_app recurring list
-RC-000001 | 매월 25일 | income  | salary | 3000000 | 월급
-RC-000002 | 매월 31일 | expense | rent   |  500000 | 월세
-
-$ python -m budget_app recurring apply --month 2024-02
-[완료] 2024-02 반복 내역 적용 created=2, skipped=0
-
-$ python -m budget_app list
-TX-000002 | 2024-02-29 | expense | rent   |  500000 | 월세
-TX-000001 | 2024-02-25 | income  | salary | 3000000 | 월급
-
-$ python -m budget_app recurring apply --month 2024-02
-[완료] 2024-02 반복 내역 적용 created=0, skipped=2
-  - RC-000001: 2024-02 에 이미 적용됨 (TX-000001)
-  - RC-000002: 2024-02 에 이미 적용됨 (TX-000002)
-
-$ python -m budget_app recurring remove --id RC-000002
-[삭제 완료] id=RC-000002
-
-$ python -m budget_app recurring remove --id RC-000002
-[오류] 반복 내역을 찾을 수 없습니다: RC-000002
-[힌트] python -m budget_app recurring list 로 id를 확인하세요.
-```
-
-- 입력 검증과 재입력 규약은 `add` 와 같다(매월 일은 1~31 정수).
-- 그 달에 없는 날은 **말일로 보정**한다(31일 규칙 → 2024-02-29). 생성된 거래에는 `rc:RC-000001` 태그가 자동으로 붙고, 같은 달에 그 태그가 있으면 다시 만들지 않는다. `search --tag rc:RC-000001` 로 규칙별 거래를 찾을 수 있다.
-- 규칙이 없으면 `list`/`apply` 모두 `[안내] 등록된 반복 내역이 없습니다` 를 출력하고 0으로 끝난다. 규칙의 카테고리가 삭제되었으면 그 규칙만 `  - RC-000003: 등록되지 않은 카테고리입니다: cafe` 로 건너뛴다.
-
-### 5.12 상세 로그 — `--verbose`
-
-```text
-$ python -m budget_app --verbose list --limit 1
-[DEBUG] 호출 TransactionService.list_recent(1)
-[DEBUG] TransactionService.list_recent 완료 (4.9 ms)
-TX-000009 | 2024-01-20 | expense | food | 30000 | 저녁 식사
-```
-
-`[DEBUG]` 줄은 stderr 로 나가므로 파이프로 stdout 만 받아도 결과에 섞이지 않는다(데코레이터 `log_call`·`timed`, D22).
-
----
-
-## 6. import / export CSV 스키마
-
-| column | required | 형식 | 비고 |
-| --- | --- | --- | --- |
-| `date` | Y | `YYYY-MM-DD` | 존재하는 날짜만 허용 |
-| `type` | Y | `income` 또는 `expense` | 소문자. 앞뒤 공백 제거 |
-| `category` | Y | 등록된 카테고리 이름 | 미등록이면 그 행은 skip (자동 생성하지 않음) |
-| `amount` | Y | 양의 정수 | `0`, 음수, 소수, 천 단위 쉼표 불가 |
-| `memo` | N | 문자열 | 비어 있어도 됨 |
-| `tags` | N | 쉼표 구분 문자열 `a,b,c` | 공백 제거, 빈 항목 제거, 중복 제거 |
-
-공통 규칙:
-
-- 인코딩 UTF-8(BOM 없음), 첫 줄은 헤더, 열 순서는 위 표와 동일: `date,type,category,amount,memo,tags`.
-- `id`는 CSV에 포함하지 않는다. import 시 새 id를 발급한다.
-- import는 행 단위로 검증한다. 유효한 행은 저장하고, 실패한 행은 번호와 사유를 출력한다. 요약은 `imported=N, skipped=M`. 파일이 없거나 헤더가 다르면 아무것도 저장하지 않고 종료 코드 1.
-- export는 `csv.writer(..., newline="")` 로 작성해 Windows에서도 빈 줄이 생기지 않는다.
-
-예시 (`samples/import_sample.csv`):
-
-```csv
-date,type,category,amount,memo,tags
-2024-01-15,expense,food,15000,점심,meal
-2024-01-14,income,salary,3000000,,
-2024-01-12,expense,transport,20000,버스,"commute,daily"
-```
-
----
-
-## 7. 오류 메시지와 종료 코드
-
-모든 오류는 두 줄 형식이다. 스택트레이스는 출력하지 않는다.
+입력값이나 파일 문제는 보통 다음처럼 표시합니다. 힌트가 없는 오류는 첫 줄만 나옵니다.
 
 ```text
 [오류] 원인
-[힌트] 해결 방법 또는 예시
+[힌트] 해결 방법
 ```
 
-| 종료 코드 | 의미 | 예 |
-| --- | --- | --- |
-| 0 | 정상 | 저장 완료, 데이터 없음 안내, 검색 0건 |
-| 1 | 입력·도메인·파일 오류 | 없는 id, 미등록 카테고리, 손상된 JSONL 줄, import 파일 없음 |
-| 2 | 사용법 오류 (argparse) | 필수 옵션 누락, export 기간 조건 없음, 알 수 없는 옵션 |
-| 130 | 사용자 중단 (Ctrl+C) | 대화형 입력 도중 중단 |
+| 종료 코드 | 의미 |
+| --- | --- |
+| 0 | 정상 처리. 검색 0건, 데이터 없음, 행별 건너뛰기가 있는 import도 포함 |
+| 1 | 잘못된 입력값, 없는 거래, 파일 문제 등 |
+| 2 | 필수 옵션 누락 등 명령 사용법 문제 |
+| 130 | Ctrl+C 또는 입력 종료로 중단 |
 
-예기치 않은 예외도 CLI 진입점의 `handle_errors` 데코레이터가 잡아 `[오류] 예기치 않은 오류: <type>` 과 `[힌트] --verbose 로 다시 실행하면 상세 로그를 볼 수 있습니다` 를 출력하고 1로 종료한다.
+사용법 오류는 `argparse`가 `usage:`와 오류를 출력하므로 위 두 줄 형식과 다릅니다. 일반 실행에서는 예기치 않은 예외도 요약해서 보여줍니다. `--verbose` 상태에서 예기치 않은 예외가 나면 DEBUG 로그에 상세 스택트레이스가 출력될 수 있습니다.
 
----
+## 8 코드 구조
 
-## 8. 구조 요약
+| 파일 | 맡은 일 |
+| --- | --- |
+| `budget_app/__main__.py` | 프로그램을 시작하고 종료 코드 전달 |
+| `budget_app/cli.py` | 명령 해석, 질문, 결과 출력 |
+| `budget_app/services.py` | 추가·검색·집계 같은 업무 규칙, CSV 교환 |
+| `budget_app/repository.py` | JSONL 읽기·추가·재작성, 초기화와 백업 복사 |
+| `budget_app/models.py` | 거래·카테고리·예산·반복 규칙의 구조와 값 검사 |
+| `budget_app/decorators.py` | 공통 오류 처리·로그·시간 측정 |
+| `budget_app/errors.py` | 오류 종류와 종료 코드 |
+| `budget_app/formatting.py` | 금액과 표의 열 정렬 |
+| `tests/` | 모델·저장소·서비스·CLI 테스트 |
+| `scripts/verify.py` | 테스트와 실제 명령 실행 시나리오를 한 번에 검사 |
 
-```text
-budget_app/
-  __main__.py     진입점: python -m budget_app
-  cli.py          argparse 정의, 대화형 프롬프트, 출력. 서비스만 호출
-  services.py     유스케이스(추가/검색/요약/예산/카테고리/입출력/반복 내역/백업). 검증과 규칙
-  repository.py   JSONL 스트리밍 읽기(yield), append, 원자적 재작성. 4개 Store(거래·카테고리·예산·반복 규칙), 초기화·백업 복사
-  models.py       dataclass Transaction/Budget/Category/RecurringRule + 필드 검증·직렬화
-  decorators.py   handle_errors / log_call / timed
-  errors.py       AppError(원인, 힌트) 계층, 종료 코드 상수
-  formatting.py   테이블 열 정렬(전각 폭 계산)·금액 포맷 (보너스 3)
-scripts/verify.py 단일 검증 게이트 (unittest + CLI 스모크)
-tests/            계층당 1개: test_models, test_repository, test_services, test_cli
-samples/          import 예시 CSV
-docs/MISSION_SPEC.md  명세 원문
-```
+명령 처리는 서비스를 부르고, 서비스는 저장소를 사용합니다. 모델과 검사 함수는 필요한 계층이 함께 사용합니다. JSONL 저장 처리는 저장소에 두고, CSV를 읽고 쓰는 처리는 서비스에 있습니다.
 
-의존 방향은 `cli → services → repository → models` 한 방향이며, `errors`와 `decorators`는 어디서나 쓴다. 계층별 책임과 계약은 [AGENT.md](AGENT.md) 5~8장에 있다.
+`list --limit N`은 파일을 끝까지 읽으면서 최근 N건을 골라 유지합니다. 무제한 검색과 CSV 내보내기는 일치하는 결과를 모아 정렬하므로 결과 수에 따라 메모리 사용량이 늘어납니다.
 
----
+## 9 구현 현황과 확인할 한계
 
-## 9. 개발 진행 계획과 현황
-
-커밋·푸시는 **최대 10회**로 제한하고, 큰 단위 9개 Phase에 1개씩 배정한다(1회는 예비). 각 Phase는 `python scripts/verify.py` 한 번으로 통과 여부를 판정한다. 세부 범위와 완료 조건은 [AGENT.md 9장](AGENT.md).
-
-| Phase | 범위 | 커밋 | 상태 |
-| --- | --- | --- | --- |
-| P0 | 문서: 명세 원문, README 분석·사양, AGENT 헌장·계획 | `docs: 명세 분석과 명세 주도 개발 계획 수립` | ✅ 완료 |
-| P1 | 골격과 계약: 패키지, errors, decorators, models 검증, argparse 전 명령 `--help`, 종료 코드 | `feat: CLI 골격과 데이터 모델·오류 계약 구현` | ✅ 완료 |
-| P2 | 저장 계층: JSONL 제너레이터 읽기, append, 원자적 재작성, 3개 Store, 초기화·기본 카테고리 | `feat: JSONL 스트리밍 저장소와 원자적 재작성 구현` | ✅ 완료 |
-| P3 | category add/list, add(대화형), list(heapq) | `feat: 카테고리 관리와 거래 추가·목록 구현` | ✅ 완료 |
-| P4 | search, summary, budget set/list | `feat: 검색·월별 요약·예산 경고 구현` | ✅ 완료 |
-| P5 | update(옵션), delete, category remove(--replace) | `feat: 거래 수정·삭제와 카테고리 재배정 구현` | ✅ 완료 |
-| P6 | import/export CSV, 샘플 파일 | `feat: CSV 가져오기·내보내기 구현` | ✅ 완료 |
-| P7 | 보너스: 테이블 정렬, backup (반복 내역은 선택) | `feat: 테이블 출력과 백업 추가` | ✅ 완료 |
-| P8 | 마무리: README 실제 출력 반영, 전체 회귀, 상태 보고 | `docs: 실행 결과 반영과 최종 검증 기록` | ✅ 완료 |
-| P9 (예비) | 보너스 B2: 반복 내역 등록·목록·삭제·월별 자동 생성(`recurring.jsonl`, D44). 예비 커밋을 사용자 결정으로 사용 | `feat: 반복 내역 등록과 월별 자동 생성 추가` | ✅ 완료 |
-
-커밋·푸시 누계: **10 / 10** (예비 1회를 P9 에 사용). 커밋: P0 `45f7217` · P1 `3fe6aa6` · P2 `cc84686` · P3 `befac86` · P4 `bc8d4ed` · P5 `0aa3419` · P6 `e371a00` · P7 `b70f369` · P8 `5cb67bf` · P9 이 커밋.
+기본 명령 10종과 보너스 `backup`, `recurring`, 표 정렬, JSONL 파일 교체를 구현했습니다. 개발 단계 P0~P9는 코드 기준 커밋 10개로 남아 있습니다. 세부 이력은 [AGENT.md](AGENT.md)에 있습니다.
 
 ### 9.1 알려진 한계
 
-- **id 번호 재사용 (D05)**: 다음 id 는 저장된 최대 번호 + 1 이므로, 가장 큰 번호의 거래를 삭제하면 그 번호가 다음 추가에 다시 발급된다. 유일성은 항상 지켜지지만 삭제된 id 가 "영구히 비어 있다"고 가정해서는 안 된다.
-- **반복 내역은 자동 실행되지 않는다 (D44)**: `recurring apply --month` 를 사용자가 직접 실행해야 그 달의 거래가 생성된다. 중복 방지는 생성 거래의 `rc:RC-xxxxxx` 태그로 판단하므로, 그 태그를 `update --tags` 로 지우면 다시 생성될 수 있다. 규칙 id 도 D05 와 같은 재사용 한계가 있다.
-- **search 의 `--category`/`--tag` 는 등록 여부를 검사하지 않는다 (D38)**: 오타를 내면 오류 대신 0건 안내가 나온다.
-- **예산 사용률은 지출만 기준 (D17)**: 수입은 사용률 계산에 들어가지 않는다.
-- **카테고리는 대소문자를 구분한다 (D12)**: `Food` 와 `food` 는 다른 카테고리다.
-- **import 는 미등록 카테고리 행을 건너뛴다 (D19)**: 자동 생성하지 않으므로 먼저 `category add` 가 필요하다.
-- **백업은 복사본일 뿐 자동 복구는 없다 (D43)**: 손상된 줄은 `[오류] 저장 파일 {파일명} {n}행이 손상되었습니다` 로 알려 주고, 복구는 사용자가 백업 파일을 되돌려 놓는 방식이다.
+- 거래와 규칙 번호는 **현재 남은 최대 번호 + 1**입니다. 가장 큰 번호를 삭제하면 그 번호를 다시 사용할 수 있습니다.
+- 반복 규칙 번호가 재사용되고 같은 월의 예전 생성 거래에 같은 표식이 남아 있으면, 새 규칙을 이미 적용한 것으로 보고 건너뛸 수 있습니다.
+- 동시에 여러 프로그램이 같은 저장 폴더에 쓰는 상황을 조정하는 파일 잠금은 없습니다. 한 번에 한 프로그램에서 사용해야 합니다.
+- 파일 교체는 파일 하나의 재작성 보호입니다. 가져오기 전체 취소, 여러 파일의 일괄 취소, 전원 차단 시 무조건 복구까지 보장하지 않습니다. CSV 출력 파일도 임시 교체 방식이 아닙니다.
+- 거래 번호가 7자리로 늘어나는 경계에서는 같은 날짜의 ID 문자열 정렬이 번호 크기순과 달라집니다. 예를 들어 `TX-999999`가 `TX-1000000`보다 앞에 나옵니다.
+- 반복 내역은 예약 실행되지 않습니다. 중복 방지는 거래의 날짜와 `rc:` 태그에 의존합니다.
+- CSV를 같은 저장 폴더로 다시 가져오면 내용 중복을 막지 않습니다. CSV만으로 카테고리·예산·반복 규칙을 모두 복원할 수도 없습니다.
+- 카테고리·태그 검색에서 오타를 내면 오류 대신 0건이 나올 수 있습니다. 카테고리는 대소문자를 구분합니다.
+- 백업 생성은 가능하지만 자동 복구 기능은 없습니다.
 
-### 9.2 최종 검증 기록 (2026-10-18, Phase 8 → P9 갱신)
+### 9.2 검증 방법과 결과
 
-- 게이트: `python scripts/verify.py` → **PASS (unittest 30개, smoke 1, 3, 4, 5, 6, 7, 9)**. unittest 는 models/repository/services/cli 4개 파일, 스모크는 실제 진입점을 subprocess 로 호출(`--help`·사용법 오류 → category/add/list → budget/summary/search → update/delete/remove → import/export 라운드트립 → 테이블 정렬/backup(4파일)/`--verbose` 계약 → recurring 등록·적용·중복 방지·말일 보정·삭제).
-- 수동 대화형 확인(유일한 수동 검증): Windows PowerShell 5.1 실제 터미널에서 `python -m budget_app --data-dir <임시폴더> add` 를 실행해 `[안내] 저장 폴더를 초기화했습니다: <임시폴더>` 와 첫 프롬프트 `날짜(YYYY-MM-DD): ` 가 각자 한 줄로 정상 표시되는 것을 확인했다. 이후 항목 입력과 `[저장 완료]` 까지의 흐름은 에이전트가 터미널에 타이핑할 수 없어 사람이 같은 탭에서 이어서 확인하도록 남겼다(subprocess 입력 주입 경로는 스모크 3 이 매 게이트마다 검증한다).
-- 5장 명령 예시는 Phase 8(5.11 은 P9) 에서 빈 폴더에 실제 실행한 출력이며, 문서와 실제 출력의 불일치는 0건이다.
+```powershell
+python scripts/verify.py
+```
+
+2026-10-18, 원본 코드 커밋 `295ff7b27127c6815e0220a7e230876c67b2427a`를 Windows와 Python 3.12.14에서 직접 실행한 결과입니다.
+
+```text
+verify: PASS (unittest 30개, smoke 1, 3, 4, 5, 6, 7, 9)
+```
+
+단위 테스트 30개와 명령 실행 시나리오 7개가 통과했습니다. 시나리오 번호는 개발 단계의 번호이며 실패나 누락 개수를 뜻하지 않습니다. 실제 진입점을 별도 프로세스로 실행하고, 질문에 대한 답은 자동으로 전달해 검사합니다.
+
+이 결과는 검사한 환경과 시나리오의 결과입니다. 이번 재검증에는 사람이 터미널에서 모든 질문에 직접 타이핑하는 확인, Python 3.10 실제 실행, Linux·macOS 실행, 여러 프로그램의 동시 쓰기, 실제 전원 차단 복구는 포함되지 않았습니다.
