@@ -12,12 +12,12 @@ Python 3.10 이상에서 실행하며, Python 기본 기능인 **표준 라이�
 
 ```mermaid
 flowchart TD
-    User["사용자: 명령 입력"] --> App["budget_app: 입력값 확인과 명령 처리"]
-    App --> Save["거래 · 카테고리 · 예산 · 반복 규칙 저장"]
-    Save --> Files["내 컴퓨터의 JSONL 파일 4개"]
-    Files --> Read["기록 읽기와 계산"]
-    Read --> Result["최근 내역 · 검색 결과 · 월별 합계"]
-    Result --> Screen["터미널에 결과 출력"]
+    User["사용자<br/>명령 입력"] --> App["budget_app<br/>값 검사 · 명령 처리"]
+    App --> Save["거래 · 카테고리<br/>예산 · 반복 규칙"]
+    Save --> Files["JSONL 파일 4개<br/>내 컴퓨터에 저장"]
+    Files --> Read["기록 읽기<br/>검색 · 계산"]
+    Read --> Result["조회 결과<br/>월별 합계"]
+    Result --> Screen["터미널<br/>결과 출력"]
 ```
 
 ### 1.2. 명령 하나가 할 일 하나를 맡습니다
@@ -119,10 +119,10 @@ JSONL은 **한 줄에 데이터 한 건을 적는 텍스트 파일 형식**입�
 
 ```mermaid
 flowchart TD
-    Data["data: 가계부 저장 폴더"] --> Tx["transactions.jsonl: 수입과 지출"]
-    Data --> Category["categories.jsonl: 카테고리 이름"]
-    Data --> Budget["budgets.jsonl: 월별 지출 예산"]
-    Data --> Recurring["recurring.jsonl: 반복 거래 규칙"]
+    Data["data<br/>가계부 저장 폴더"] --> Tx["transactions.jsonl<br/>수입 · 지출"]
+    Data --> Category["categories.jsonl<br/>카테고리 이름"]
+    Data --> Budget["budgets.jsonl<br/>월 예산"]
+    Data --> Recurring["recurring.jsonl<br/>반복 규칙"]
 ```
 
 처음 준비하는 카테고리는 `food`, `transport`, `rent`, `salary`, `etc`입니다. 각각 식비, 교통비, 임차료, 급여, 기타의 뜻입니다. 카테고리 파일이 빈 상태일 때 이 다섯 이름을 채웁니다.
@@ -172,13 +172,13 @@ python -m budget_app add
 
 ```mermaid
 flowchart TD
-    Ask["항목 하나를 질문"] --> Check{"입력값 검사"}
-    Check -->|"수정 필요"| Explain["원인과 입력 방법 안내"]
+    Ask["항목 질문"] --> Check{"값 검사"}
+    Check -->|"수정 필요"| Explain["원인과<br/>입력 방법 안내"]
     Explain --> Ask
-    Check -->|"통과"| Next{"마지막 항목까지 입력했는가?"}
+    Check -->|"통과"| Next{"입력 완료?"}
     Next -->|"계속 입력"| Ask
-    Next -->|"입력 완료"| Save["거래 번호 발급 → 파일 끝에 한 줄 추가"]
-    Save --> Result["저장한 거래 번호 출력"]
+    Next -->|"입력 완료"| Save["거래 번호 발급<br/>파일 끝에 저장"]
+    Save --> Result["저장 번호 출력"]
 ```
 
 입력 오류가 생기면 프로그램이 같은 항목을 다시 묻습니다. 질문 도중 Ctrl+C를 누르거나 입력을 종료하면 프로그램은 종료 코드 130으로 끝납니다.
@@ -239,14 +239,14 @@ python -m budget_app summary --month 2026-10 --top 3
 
 ```mermaid
 flowchart TD
-    Month["조회할 월 선택"] --> Records["그달의 거래 읽기"]
+    Month["월 선택"] --> Records["해당 월의<br/>거래 읽기"]
     Records --> Income["수입 합계"]
     Records --> Expense["지출 합계"]
-    Income --> Balance["월 잔액 = 수입 합계 - 지출 합계"]
+    Income --> Balance["월 잔액 =<br/>수입 - 지출"]
     Expense --> Balance
-    Expense --> Rank["카테고리별 지출 순위"]
-    Expense --> Compare["월 예산과 비교"]
-    Budget["설정한 월 예산"] --> Compare
+    Expense --> Rank["분류별 지출 순위"]
+    Expense --> Compare["지출과 예산 비교"]
+    Budget["월 예산"] --> Compare
 ```
 
 `--top 3`은 지출이 큰 카테고리 3개를 뜻합니다. 기본값은 5개이며, 양의 정수로 지정해야 합니다. 지출 금액이 같으면 카테고리 이름순으로 나열합니다. 거래가 0건인 달은 `데이터 없음`으로 표시합니다.
@@ -312,15 +312,15 @@ python -m budget_app import --from samples/import_sample.csv
 
 ```mermaid
 flowchart TD
-    Csv["CSV 파일"] --> Header["여섯 열 이름 확인"]
-    Header --> Row["거래 한 행 읽기"]
-    Row --> Check{"거래 값 검사"}
-    Check -->|"통과"| Save["새 거래 번호 발급 → JSONL에 추가"]
-    Check -->|"수정 필요"| Skip["건너뛴 행 번호와 사유 기록"]
-    Save --> Next{"다음 행이 있는가?"}
+    Csv["CSV 파일"] --> Header["열 이름 6개 확인"]
+    Header --> Row["한 행 읽기"]
+    Row --> Check{"값 검사"}
+    Check -->|"통과"| Save["새 번호 발급<br/>거래 저장"]
+    Check -->|"수정 필요"| Skip["행 건너뛰기<br/>번호와 사유 기록"]
+    Save --> Next{"다음 행?"}
     Skip --> Next
     Next -->|"다음 행"| Row
-    Next -->|"처리 완료"| Result["imported와 skipped 출력"]
+    Next -->|"처리 완료"| Result["가져오기 결과<br/>imported · skipped"]
 ```
 
 저장소에 포함된 샘플은 정상 행 5개와 금액 오류 행 1개로 구성되어, 기본 카테고리가 준비된 저장소에서 `imported=5, skipped=1`로 처리됩니다. 같은 CSV를 다시 가져오면 각 정상 행을 새 거래로 추가합니다.
@@ -359,14 +359,14 @@ python -m budget_app recurring remove --id RC-000001
 
 ```mermaid
 flowchart TD
-    Add["recurring add: 규칙 등록"] --> Rule["recurring.jsonl에 저장"]
-    Rule --> Apply["recurring apply: 적용할 월 지정"]
-    Apply --> Check{"해당 월의 생성 표식과 카테고리 확인"}
-    Check -->|"이미 적용한 규칙"| Skip["건너뛴 규칙과 사유 출력"]
+    Add["recurring add<br/>반복 규칙 등록"] --> Rule["규칙 파일에 저장"]
+    Rule --> Apply["recurring apply<br/>적용할 월 지정"]
+    Apply --> Check{"생성 대상 확인"}
+    Check -->|"이미 적용한 규칙"| Skip["규칙 건너뛰기<br/>사유 출력"]
     Check -->|"카테고리 등록 필요"| Skip
-    Check -->|"생성 대상"| Date["거래 날짜 결정: 규칙의 일자와 월말 중 빠른 날"]
-    Date --> Tx["거래 생성 + rc:규칙번호 태그 부착"]
-    Tx --> Save["transactions.jsonl에 저장"]
+    Check -->|"생성 대상"| Date["규칙의 일자와<br/>월말 중 빠른 날"]
+    Date --> Tx["거래 생성<br/>규칙 번호 태그 부착"]
+    Tx --> Save["거래 파일에 저장"]
 ```
 
 31일 규칙을 30일까지 있는 달에 적용하면 거래 날짜를 30일로 정합니다. 생성한 거래에는 `rc:RC-000001`처럼 규칙 번호를 담은 태그를 붙입니다. 프로그램은 해당 월의 거래 날짜와 이 태그를 읽어 적용 여부를 판정합니다. 같은 달에 같은 규칙 번호의 표식을 찾으면 그 규칙을 건너뜁니다. `created`는 만든 거래 수이고, `skipped`는 건너뛴 규칙 수입니다.
@@ -383,12 +383,12 @@ python -m budget_app backup
 
 ```mermaid
 flowchart LR
-    Source["현재 저장 폴더의 파일 4개"] --> Copy["backup: 파일 복사"]
-    Copy --> Folder["backups / 날짜-시각 폴더"]
-    Folder --> Tx["transactions.jsonl"]
-    Folder --> Category["categories.jsonl"]
-    Folder --> Budget["budgets.jsonl"]
-    Folder --> Recurring["recurring.jsonl"]
+    Source["현재 저장 파일 4개"] --> Copy["backup<br/>파일 복사"]
+    Copy --> Folder["backups 아래<br/>날짜-시각 폴더"]
+    Folder --> Tx["거래 파일"]
+    Folder --> Category["카테고리 파일"]
+    Folder --> Budget["예산 파일"]
+    Folder --> Recurring["반복 규칙 파일"]
 ```
 
 복구는 프로그램을 종료한 뒤 백업 폴더의 필요한 JSONL 파일을 가계부 저장 폴더에 복사하는 절차로 진행합니다. 네 파일을 함께 복사하면 거래·카테고리·예산·반복 규칙을 그 백업의 내용으로 맞춥니다.
@@ -401,11 +401,11 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    Entry["__main__.py: 프로그램 시작"] --> Cli["cli.py: 명령 해석 · 질문 · 결과 출력"]
-    Cli --> Service["services.py: 거래 처리 · 검색 · 집계 · CSV 교환"]
-    Service --> Repository["repository.py: JSONL 읽기 · 추가 · 재작성"]
+    Entry["__main__.py<br/>프로그램 시작"] --> Cli["cli.py<br/>명령 · 질문 · 출력"]
+    Cli --> Service["services.py<br/>거래 처리 · 검색<br/>월별 집계 · CSV"]
+    Service --> Repository["repository.py<br/>JSONL 읽기와 쓰기"]
     Repository --> Files["저장 파일 4개"]
-    Cli -.-> Models["models.py: 데이터 구조와 입력값 검사"]
+    Cli -.-> Models["models.py<br/>데이터 구조<br/>값 검사"]
     Service -.-> Models
     Repository -.-> Models
 ```
@@ -437,10 +437,10 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Read["기존 파일을 한 줄씩 읽기"] --> Edit["바꿀 항목 반영"]
-    Edit --> Temp["같은 폴더의 임시 파일에 새 내용 작성"]
-    Temp --> Sync["flush와 fsync: 쓴 내용을 운영체제에 전달하고 동기화"]
-    Sync --> Replace["os.replace: 완성한 파일로 기존 파일 교체"]
+    Read["기존 파일 읽기"] --> Edit["변경 사항 반영"]
+    Edit --> Temp["임시 파일에<br/>새 내용 작성"]
+    Temp --> Sync["flush · fsync<br/>파일 쓰기 동기화"]
+    Sync --> Replace["os.replace<br/>기존 파일 교체"]
 ```
 
 검사와 파일 준비를 마친 다음 교체 단계로 진행합니다. 임시 파일 작성 중 오류가 발생하면 임시 파일을 정리하고 기존 파일을 기준으로 처리 오류를 알립니다.
