@@ -4,8 +4,11 @@ from __future__ import annotations
 import contextlib
 import csv
 import io
+import subprocess
+import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 from budget_app.__main__ import entry
@@ -198,6 +201,189 @@ class TableFormattingScenario(CliTestCase):
         self.assertEqual(len(lines), 3)
         self.assertEqual(len({tuple(self.separator_positions(line)) for line in lines}), 1)
         self.assertEqual([line.split("|")[0].strip() for line in lines], ["TX-000001", "TX-000002", "TX-000003"])
+
+
+class EasyModeScenario(CliTestCase):
+    """실제 Python 프로세스에서 간편 실행·연속 작업·오류 복구와 입력 중단을 확인한다(D45)."""
+
+    def run_easy(
+        self,
+        data_dir: Path,
+        *argv: str,
+        input_text: str = "",
+        module: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        """두 간편 진입점 중 하나를 실행한다. 질문 입력 오류가 무한 대기로 이어지지 않게 제한한다."""
+        command = [sys.executable, "-m", "budget_app.easy"] if module else [sys.executable, str(ROOT / "budget.py")]
+        return subprocess.run(
+            [*command, "--data-dir", str(data_dir), *argv],
+            input=input_text,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=ROOT,
+            timeout=15,
+        )
+
+    def test_help_at_both_entry_points_does_not_initialize_data(self) -> None:
+        """실행 도움말과 셸 도움말은 저장 파일을 만들지 않고, 명령 도움말 뒤에도 셸을 유지한다."""
+        for module in (False, True):
+            with self.subTest(module=module):
+                data_dir = self.tmp / ("module" if module else "script")
+                result = self.run_easy(data_dir, "--help", module=module)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("add", result.stdout)
+                self.assertFalse(data_dir.exists())
+
+                result = self.run_easy(data_dir, "--data-dir=-ledger", "help", "add", module=module)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(data_dir.exists())
+
+                result = self.run_easy(
+                    data_dir,
+                    input_text="help\n도움말\nhelp add\nadd --help\n종료\n",
+                    module=module,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("add", result.stdout)
+                self.assertNotIn("Traceback", result.stdout + result.stderr)
+                self.assertFalse(data_dir.exists())
+
+    def test_default_add_search_summary_update_and_delete_in_one_session(self) -> None:
+        """빈 날짜·종류·분류로 거래를 추가하고, 짧은 명령만으로 조회부터 수정·삭제까지 수행한다."""
+        data_dir = self.tmp / "ledger"
+        result = self.run_easy(
+            data_dir,
+            input_text="\n".join([
+                "add", "", "", "", "1200", "점심", "meal",
+                "list", "summary", "", "search", "점심",
+                "update", "TX-000001", "1", "1500", "list",
+                "update", "TX-000001", "2", "", "list",
+                "delete", "TX-000001", "list", "exit", "",
+            ]),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertIn("[저장 완료] id=TX-000001", result.stdout)
+        self.assertIn(date.today().isoformat(), result.stdout)
+        self.assertIn("expense", result.stdout)
+        self.assertIn("etc", result.stdout)
+        self.assertIn("총 지출: 1200원", result.stdout)
+        self.assertIn("1500", result.stdout)
+        self.assertEqual(result.stdout.count("[수정 완료] id=TX-000001"), 2)
+        self.assertIn("[삭제 완료] id=TX-000001", result.stdout)
+        self.assertIn("거래가 없습니다", result.stdout)
+        self.assertEqual(build_services(data_dir).transactions.list_recent(20), [])
+
+    def test_group_choices_and_csv_paths_with_spaces(self) -> None:
+        """예산·카테고리·반복 규칙 선택과 공백 경로의 CSV 입출력이 기존 저장소에 반영된다."""
+        data_dir = self.tmp / "ledger"
+        source_csv = self.tmp / "가져올 내역.csv"
+        source_csv.write_bytes(SAMPLE.read_bytes())
+        output_csv = self.tmp / "내보낸 내역.csv"
+        result = self.run_easy(
+            data_dir,
+            input_text="\n".join([
+                "category", "2", "카페 공간", "category", "",
+                "budget", "2", "2024-01", "20000", "budget", "",
+                "import", str(source_csv),
+                f'export --out "{output_csv}" --month 2024-01',
+                "recurring", "2", "31", "1", "etc", "500", "정기 지출", "",
+                "recurring", "3", "2024-02", "recurring", "",
+                "recurring", "4", "RC-000001", "exit", "",
+            ]),
+            module=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertIn("category=카페 공간", result.stdout)
+        self.assertIn("imported=5, skipped=1", result.stdout)
+        self.assertIn("created=1, skipped=0", result.stdout)
+        self.assertIn("[삭제 완료] id=RC-000001", result.stdout)
+        with output_csv.open(encoding="utf-8", newline="") as handle:
+            self.assertEqual(len(list(csv.DictReader(handle))), 5)
+        svc = build_services(data_dir)
+        self.assertIn("카페 공간", svc.categories.list_names())
+        self.assertEqual(svc.budgets.summary("2024-01", 5).budget.amount, 20000)
+        rows = svc.transactions.list_recent(20)
+        self.assertEqual(len(rows), 6)
+        self.assertTrue(any(row.date == "2024-02-29" and row.amount == 500 for row in rows))
+        self.assertEqual(svc.recurring.list_all(), [])
+
+    def test_malformed_commands_and_help_recover_to_next_command(self) -> None:
+        """알 수 없는 명령·잘못된 옵션·닫히지 않은 따옴표를 입력해도 다음 조회를 실행한다."""
+        data_dir = self.tmp / "ledger"
+        result = self.run_easy(
+            data_dir,
+            input_text='unknown-command\nlist --limit zero\nsummary --month\n"닫히지 않음\nhelp add\nadd --help\nlist\nexit\n',
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("거래가 없습니다", result.stdout)
+        self.assertIn("add", result.stdout)
+        self.assertTrue(result.stderr)
+        self.assertNotIn("Traceback", result.stdout + result.stderr)
+        self.assertEqual(build_services(data_dir).transactions.list_recent(20), [])
+
+    def test_eof_at_command_prompt_is_success_and_during_input_is_interruption(self) -> None:
+        """명령 대기 EOF는 0, 거래 입력 중 EOF는 두 진입점 모두 130이며 미완성 거래를 저장하지 않는다."""
+        for module in (False, True):
+            with self.subTest(module=module):
+                data_dir = self.tmp / ("module" if module else "script")
+                result = self.run_easy(data_dir, module=module)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(data_dir.exists())
+
+                result = self.run_easy(data_dir, input_text="add\n2024-01-01\n", module=module)
+                self.assertEqual(result.returncode, 130, result.stdout + result.stderr)
+                self.assertNotIn("Traceback", result.stdout + result.stderr)
+                transactions = data_dir / "transactions.jsonl"
+                if transactions.exists():
+                    self.assertEqual(transactions.read_text(encoding="utf-8"), "")
+
+    def test_injected_interrupt_windows_path_and_empty_memo_argument(self) -> None:
+        """공개 입력 훅으로 Ctrl+C를 주입한 뒤 작업을 계속하고, 역슬래시와 빈 옵션 값을 보존한다."""
+        data_dir = self.tmp / "ledger"
+        windows_path = r"C:\Users\name\My Files\missing.csv"
+        events = [
+            "add", None,
+            f'import --from "{windows_path}"',
+            "add", "2024-01-10", "1", "food", "1000", "원본 메모", "",
+            "update", "TX-000001", "2", "--help", "search", "--help",
+            'update --id TX-000001 --memo ""', "list", "exit",
+        ]
+        script = f'''from __future__ import annotations
+import sys
+from budget_app.easy import main
+events = iter({events!r})
+def read(prompt: str) -> str:
+    print(prompt, end="", flush=True)
+    try:
+        answer = next(events)
+    except StopIteration:
+        raise EOFError from None
+    if answer is None:
+        raise KeyboardInterrupt
+    return answer
+sys.exit(main(sys.argv[1:], input_fn=read))
+'''
+        result = subprocess.run(
+            [sys.executable, "-c", script, "--data-dir", str(data_dir)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=ROOT,
+            timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(windows_path, result.stderr)
+        self.assertIn("| --help", result.stdout)
+        self.assertNotIn("expected one argument", result.stderr)
+        self.assertIn("[수정 완료] id=TX-000001", result.stdout)
+        self.assertNotIn("Traceback", result.stdout + result.stderr)
+        rows = build_services(data_dir).transactions.list_recent(20)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].memo, "")
+        self.assertEqual(rows[0].amount, 1000)
 
 
 if __name__ == "__main__":

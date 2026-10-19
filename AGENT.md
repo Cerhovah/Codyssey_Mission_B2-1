@@ -1,6 +1,6 @@
 # AGENT.md — budget_app 명세 주도 개발 지침
 
-버전 1.0 / 기준일 2026-10-18 / 대상: 이 저장소에서 코드를 작성하는 모든 AI 에이전트와 사람
+버전 1.1 / 기준일 2026-10-19 / 대상: 이 저장소에서 코드를 작성하는 모든 AI 에이전트와 사람
 
 ## 1. 목적과 읽는 순서
 
@@ -8,9 +8,9 @@
 
 1. [docs/MISSION_SPEC.md](docs/MISSION_SPEC.md) — 과제 명세 원문. **수정 금지.** 모든 요구의 근거.
 2. [README.md](README.md) — 명세 심층 분석(요구사항 R01~R25, B1~B4), 사용자 관점 사양(실행·저장·명령·CSV·종료 코드), 진행 현황.
-3. 이 문서 — 헌장(불변 규칙), 결정표 D01~D44, 계층·계약, Phase 계획, 검증 정책, Git 규칙.
+3. 이 문서 — 헌장(불변 규칙), 결정표 D01~D45, 계층·계약, Phase 계획, 검증 정책, Git 규칙.
 
-세 문서가 충돌하면 우선순위는 **원문 > 이 문서의 결정표 > README 사양 > 코드**다. 원문이 모호한 부분은 결정표가 해소한다. 결정표에 없는 모호함을 만나면 추측해서 구현하지 않고, 결정표에 D45부터 새 항목을 추가한 뒤 구현한다.
+세 문서가 충돌하면 우선순위는 **원문 > 이 문서의 결정표 > README 사양 > 코드**다. 원문이 모호한 부분은 결정표가 해소한다. 결정표에 없는 모호함을 만나면 추측해서 구현하지 않고, 결정표에 D46부터 새 항목을 추가한 뒤 구현한다.
 
 ## 2. 명세 주도 개발 원칙 (이 저장소의 SDD 해석)
 
@@ -38,7 +38,7 @@
 | C11 | 사용자 메시지·주석·docstring은 **한국어**, 식별자·JSON 키·CSV 헤더는 영어. 파일은 UTF-8(BOM 없음), LF. | 프로젝트 관례 |
 | C12 | `data/`, 백업, 내보낸 CSV, `__pycache__`는 커밋하지 않는다. 샘플 CSV만 `samples/`에 둔다. | 안전 |
 
-## 4. 결정표 (모호성 해소) — D01~D44
+## 4. 결정표 (모호성 해소) — D01~D45
 
 원문이 선택을 맡기거나 침묵한 지점의 **고정 결정**이다. 구현은 이 표를 따른다. 바꾸려면 표를 먼저 고친다.
 
@@ -89,6 +89,16 @@
 | D42 | 테이블 정렬 (B3) | list/search/budget list 는 `formatting.format_transaction_table(rows)` / `format_budget_table(budgets)` 로 출력한다. 열 순서 `id \| date \| type \| category \| amount \| memo`, 구분자 ` \| `, id·date·type·category 좌정렬, amount 우정렬, 마지막 열(memo·금액원) 은 패딩 없음. 열 너비는 그 명령의 결과 리스트에서 계산하며, 너비 계산은 `unicodedata.east_asian_width` 가 W/F 인 문자를 2칸으로 센다. type 열 최소 너비 7. 결과는 `--limit`(list) 또는 필터 통과분(search) 으로 이미 메모리에 있는 소량 리스트이므로 렌더 전 너비 계산은 C5 위반이 아니다. 금액은 천 단위 구분 없이 숫자 그대로(README 5장 예시·스모크와 일치). 단일 행 함수 `format_transaction_row`/`format_budget_row` 는 호환용으로 남긴다 | 원문 보너스 3. 한글 메모·카테고리가 있어도 열이 어긋나지 않음 |
 | D43 | backup (B1) 과 B2 | `backup` 은 `{data_dir}/backups/{YYYYMMDD-HHMMSS}/` 를 만들고 저장 파일 4개(D44 포함)를 `shutil.copy2` 로 복사한다(`repository.backup_files`). 같은 초에 다시 실행해 폴더가 이미 있으면 `-1`, `-2`, … 접미사를 붙여 덮어쓰지 않는다. 출력 `[완료] {경로} (4 files)`. 복사 실패는 StorageError. 반복 내역(B2) 은 예비 커밋에서 D44 로 구현했다(C3 개정) | 원문 보너스 1, D29 |
 | D44 | 반복 내역 (B2) | 저장 파일 `recurring.jsonl`(4번째, C3 개정). 레코드 `{"id":"RC-000001","day":25,"type":"income","category":"salary","amount":3000000,"memo":"월급","tags":[]}`, 모델 `RecurringRule`, id 는 `RC-` + 6자리(TX 와 같은 규칙: 스트리밍 최대 + 1, 삭제 후 재발급 가능), `day` 는 1~31 정수(`parse_day`). 명령 `recurring add`(대화형: `매월 며칠(1~31): `, 타입, 카테고리, 금액, 메모, 태그 — add 와 같은 `ask` 루프·검증), `recurring list`(`id \| 매월 N일 \| type \| category \| amount \| memo` 테이블, 0건 `[안내] 등록된 반복 내역이 없습니다`), `recurring remove --id RC-xxxxxx`(형식 오류 ValidationError, 없는 id `NotFoundError("반복 내역을 찾을 수 없습니다: {id}")` 종료 1, 성공 `[삭제 완료] id=RC-000001`), `recurring apply --month YYYY-MM`: 규칙 0건이면 `[안내] 등록된 반복 내역이 없습니다` 종료 0. 거래 파일을 1회 스트리밍해 해당 월에 `rc:{규칙id}` 태그가 있는 규칙 집합을 만든 뒤, 규칙마다 (이미 적용 → skip `{월} 에 이미 적용됨 ({거래id})`, 미등록 카테고리 → skip 사유 = NotFoundError 메시지) 아니면 날짜 `{월}-{min(day, 말일):02d}`(`calendar.monthrange`), 태그 = 규칙 태그 + `rc:{규칙id}`, id 는 `next_id` 1회 후 +1 로 append. 출력 `[완료] {월} 반복 내역 적용 created=N, skipped=M` + skip 사유 줄 `  - RC-000001: {사유}`. `ensure_initialized` 는 4개 파일을 만들고 `backup` 은 4개를 복사(`(4 files)`) | 원문 보너스 2. 사용자 결정(2026-10-18)으로 남은 예비 커밋 1회를 사용. 중복 생성 방지는 거래 자체에 남는 `rc:` 태그로 하여 추가 메타 파일을 두지 않음 |
+
+### D45 — 간편 실행 모듈 (사용자 요청 2026-10-19)
+
+- 기존 폴더와 핵심 코드는 유지하고 `budget.py`(실행 파일), `budget_app/easy.py`(간편 CLI) 두 파일만 추가한다. 표준 라이브러리만 사용한다.
+- `python budget.py` 또는 `python -m budget_app.easy`로 대화형 모드에 들어간다. 이후 `add`, `list`, `search`, `summary`, `budget`, `category`, `update`, `delete`, `import`, `export`, `backup`, `recurring`, `help`, `exit`를 입력한다. `도움말`, `종료`도 지원한다. `python budget.py add`처럼 한 번 실행하는 방식도 제공한다.
+- 옵션 없이 입력한 명령은 필요한 값을 질문한다. 날짜·월은 오늘·이번 달을 기본값으로 제안하고, 수입·지출과 카테고리는 번호 선택을 제공한다. `search`는 메모 키워드를 질문한다. 그룹 명령은 하위 작업을 선택한다. `update`는 변경할 필드와 값을 질문한 뒤 기존 옵션형 명령으로 전달한다(D03 유지). 옵션을 직접 지정한 명령은 기존 CLI 형식과 검증을 따른다.
+- 간편 모듈은 기존 `cli.build_parser`/`dispatch`, 서비스·모델 검증, `handle_errors`를 재사용한다. 저장 형식·폴더 기본값은 동일하고, 도움말·잘못된 명령은 저장 폴더를 만들지 않는다. `--data-dir`, `--verbose`는 실행 시 지정해 세션 내에서 유지한다.
+- 셸의 명령 입력은 따옴표와 Windows 경로의 백슬래시를 보존한다. 데이터 질문의 답은 한 줄 전체를 사용한다. 명령 실패·사용법 오류·Ctrl+C는 해당 작업만 취소하고 셸을 유지한다. 명령 대기 중 EOF 또는 `exit`는 정상 종료, 데이터 입력 중 EOF는 중단 코드 130이다.
+- 검증은 기존 `tests/test_cli.py`에 실제 프로세스 시나리오를 추가하고 `scripts/verify.py` 게이트로 실행한다. README에 간편 사용법과 실제 검증 결과를 반영한다. 이번 요청은 완료된 P0~P9 이후의 확장이므로 원래 10회 구현 한도와 구분해 한 번 커밋·푸시한다. 사용자가 `main` 커밋·푸시를 명시 승인했다.
+- 로컬 Git 인증 연결이 끊긴 경우 연결된 GitHub 앱으로 같은 저장소의 권한을 확인한 뒤 검증된 트리를 한 번 커밋하고 `main`을 fast-forward 갱신할 수 있다. 이후 로컬 `main`도 해당 커밋으로 동기화한다. 공동 작성자 표기는 실제 사용한 도구를 따른다.
 
 ## 5. 계층과 모듈 책임
 

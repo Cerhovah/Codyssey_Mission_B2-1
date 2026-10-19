@@ -88,8 +88,71 @@ Python 3.10 이상과 Git을 준비한 뒤 저장소를 내려받습니다.
 git clone https://github.com/Cerhovah/Codyssey_Mission_B2-1.git
 cd Codyssey_Mission_B2-1
 python --version
-python -m budget_app --help
+python budget.py
 ```
+
+### 2.1. 한 번 실행하고 짧은 명령만 입력하기
+
+**`python budget.py`를 실행한 뒤 `add`, `list`, `help`처럼 할 일만 입력하면 됩니다.** `python -m budget_app.easy`로도 같은 간편 모드에 들어갑니다. 별도 설치나 외부 패키지가 필요하지 않습니다. macOS·Linux에서 `python`이 없거나 버전이 낮다면 Python 3.10 이상의 `python3` 또는 `python3.12`를 사용하세요.
+
+```text
+python budget.py
+가계부> add
+날짜 [엔터: 오늘]:
+종류 [1: 지출, 2: 수입 / 엔터: 지출]: 1
+카테고리 [번호 또는 이름 / 엔터: etc]: food
+금액(양수 정수): 5000
+메모(선택): 점심
+태그(쉼표로 구분, 없으면 엔터):
+[저장 완료] id=TX-000001
+가계부> list
+가계부> summary
+가계부> help
+가계부> exit
+```
+
+날짜는 엔터를 누르면 오늘, 종류는 엔터를 누르면 지출이 됩니다. 카테고리는 등록된 목록을 보여주므로 번호나 이름으로 고르면 됩니다. `etc`가 등록되어 있으면 엔터로 선택할 수 있습니다. 잘못된 거래 입력은 같은 항목을 다시 질문합니다.
+
+| 간편 모드에 입력 | 처리 방법 |
+| --- | --- |
+| `add` | 질문에 답하며 거래 추가 |
+| `list` | 최근 거래 20건 조회 |
+| `search` | 메모 검색어 질문. 빈 값은 전체 검색 |
+| `summary` | 조회할 월 질문. 엔터는 이번 달 |
+| `budget` | 예산 조회·설정 중 선택 |
+| `category` | 카테고리 조회·추가·삭제 중 선택 |
+| `update` | 거래 번호, 수정할 항목과 새 값 질문 |
+| `delete` | 삭제할 거래 번호 질문 |
+| `import`, `export` | CSV 경로와 필요한 기간 질문 |
+| `backup` | 현재 가계부 백업 |
+| `recurring` | 반복 규칙 조회·추가·적용·삭제 중 선택 |
+| `help`, `도움말` | 짧은 전체 안내 |
+| `help add`, `add --help` | 해당 명령의 도움말 |
+| `exit`, `종료` | 종료 |
+
+`budget set`, `category add`, `recurring apply`처럼 하위 작업을 바로 입력할 수도 있습니다. 거래 번호는 `list`, 반복 규칙 번호는 `recurring list`에서 확인하세요. 수정·삭제 질문에는 표시된 전체 번호를 입력합니다.
+
+Python 실행 환경을 따로 준비하려면 가상환경을 만들고 연결하세요. 외부 패키지는 설치하지 않습니다.
+
+```powershell
+python3.12 -m venv --without-pip .venv
+```
+
+macOS·Linux는 `source .venv/bin/activate`, Windows PowerShell은 `.\.venv\Scripts\Activate.ps1`로 연결한 뒤 `python budget.py`를 실행합니다. 가상환경은 Git에 포함하지 않습니다.
+
+작업 오류가 나도 다음 명령을 계속 입력할 수 있습니다. Ctrl+C는 현재 작업을 취소합니다. 명령을 기다리는 동안 입력을 종료하면 정상 종료하고, 거래 등의 답을 입력하던 중 입력을 종료하면 코드 130으로 끝납니다.
+
+필요하면 기존 옵션을 그대로 사용합니다. **옵션을 직접 쓰는 경우에는 해당 명령에 필요한 옵션도 함께 지정하세요.** 파일 경로는 질문에 답할 때 공백을 포함해 그대로 입력하고, 명령에 붙일 때는 따옴표로 감쌉니다.
+
+```text
+가계부> list --limit 3
+가계부> summary --month 2026-10 --top 3
+가계부> update --id TX-000001 --amount 6000
+```
+
+저장 폴더는 기본 `./data`입니다. 실행할 때 `python budget.py --data-dir ./my_data`로 지정하면 그 세션에서 계속 사용합니다. `--verbose`도 실행할 때 지정합니다. `python budget.py add`, `python budget.py help`처럼 한 명령만 실행하는 방법도 제공합니다.
+
+### 2.2. 기존 CLI 명령으로 실행하기
 
 명령을 실행할 위치는 `budget_app` 폴더가 들어 있는 저장소의 최상위 폴더입니다. `python -m budget_app`은 Python에게 이 가계부를 실행하라는 뜻입니다. 그 뒤에 할 일과 세부 조건을 붙입니다.
 
@@ -414,6 +477,8 @@ flowchart TD
 
 | 파일·폴더 | 맡은 일 |
 | --- | --- |
+| `budget.py` | 간편 모드를 시작하는 짧은 실행 파일 |
+| `budget_app/easy.py` | 반복 명령 입력, 짧은 도움말, 필요한 값 질문 후 기존 CLI 실행 |
 | `budget_app/__main__.py` | 프로그램 시작과 종료 코드 전달 |
 | `budget_app/cli.py` | 명령 해석, 질문, 결과 출력 |
 | `budget_app/services.py` | 거래·예산·반복 규칙 처리와 CSV 교환 |
@@ -495,7 +560,8 @@ python -m budget_app --verbose list --limit 1
 | --- | --- |
 | 프로그램 구현 P0~P9 | 10 |
 | README 개정 | 2 |
-| 합계 | 12 |
+| 간편 실행 모듈 추가(D45, 기존 과제 완료 후 확장) | 1 |
+| 합계 | 13 |
 
 ### 9.2. 검증 명령은 단위 테스트와 실제 명령 실행을 함께 검사합니다
 
@@ -510,3 +576,12 @@ verify: PASS (unittest 30개, smoke 1, 3, 4, 5, 6, 7, 9)
 ```
 
 단위 테스트 30개와 명령 실행 시나리오 7개가 통과했습니다. 단위 테스트는 날짜 검사, 파일 읽기, 검색·집계처럼 나눈 기능을 검사합니다. 명령 실행 시나리오는 별도 프로세스에서 `python -m budget_app`을 실행해 명령 입력부터 결과 출력까지 확인합니다. 대화형 질문의 답은 자동 입력으로 전달합니다. `smoke` 뒤 숫자는 각 시나리오가 연결된 개발 단계의 번호입니다.
+
+2026-10-19 간편 모드 추가 후, macOS와 Python 3.12.13 가상환경에서 검증했습니다.
+
+```text
+.venv/bin/python scripts/verify.py
+verify: PASS (unittest 36개, smoke 1, 3, 4, 5, 6, 7, 9)
+```
+
+기존 검증에 간편 모드 시나리오 6개를 추가했습니다. 두 실행 방법, 기본값으로 거래 추가·검색·요약·수정·삭제, 그룹 메뉴와 CSV 입출력, 오류 후 계속 실행, 입력 종료, Ctrl+C 취소, Windows 경로·공백·빈 메모·옵션처럼 보이는 메모를 실제 프로세스로 확인합니다. 실행 코드 추가는 `budget.py`, `budget_app/easy.py` 두 파일이며, 기존 핵심 모듈은 그대로 사용합니다.
