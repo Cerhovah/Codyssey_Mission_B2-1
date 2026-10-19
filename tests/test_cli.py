@@ -275,6 +275,78 @@ class EasyModeScenario(CliTestCase):
         self.assertIn("거래가 없습니다", result.stdout)
         self.assertEqual(build_services(data_dir).transactions.list_recent(20), [])
 
+    def test_delete_shortcuts_normalize_ids_and_preserve_other_transactions(self) -> None:
+        """영어·한글 삭제의 한 줄 입력·질문·기존 옵션은 대소문자를 정리해 지정한 거래만 지운다."""
+        commands = [
+            "delete TX-000002",
+            "delete tx-000002",
+            "삭제 Tx-000002",
+            "delete\n  tx-000002  ",
+            "삭제\n  Tx-000002  ",
+            "delete --id Tx-000002",
+            "delete --id=tx-000002",
+        ]
+        for index, command in enumerate(commands):
+            with self.subTest(command=command):
+                data_dir = self.tmp / f"delete_{index}"
+                code, _, err = self.run_cli(data_dir, "import", "--from", str(SAMPLE))
+                self.assertEqual((code, err), (0, ""))
+                before = {row.id: row for row in build_services(data_dir).transactions.list_recent(20)}
+
+                result = self.run_easy(data_dir, input_text=f"{command}\nlist\nexit\n", module=bool(index % 2))
+                self.assertEqual((result.returncode, result.stderr), (0, ""), result.stdout)
+                self.assertIn("[삭제 완료] id=TX-000002", result.stdout)
+                self.assertNotIn("TX-000002 |", result.stdout)
+                self.assertIn("TX-000001 |", result.stdout)
+                remaining = {row.id: row for row in build_services(data_dir).transactions.list_recent(20)}
+                self.assertEqual(remaining, {key: row for key, row in before.items() if key != "TX-000002"})
+
+    def test_invalid_delete_commands_leave_saved_transactions_unchanged(self) -> None:
+        """잘못된 번호·없는 번호·오타·여분 인자는 오류를 알리고 기존 거래 파일을 유지한다."""
+        data_dir = self.tmp / "ledger"
+        code, _, err = self.run_cli(data_dir, "import", "--from", str(SAMPLE))
+        self.assertEqual((code, err), (0, ""))
+        transactions = data_dir / "transactions.jsonl"
+        before = transactions.read_bytes()
+        cases = [
+            (("delete", "TX-1"), 1),
+            (("삭제", "tx_000002"), 1),
+            (("delete", "--id=tx-00000a"), 1),
+            (("delete", "tx-999999"), 1),
+            (("delet", "tx-000002"), 2),
+            (("delete", "tx-000001", "tx-000002"), 2),
+        ]
+        for argv, expected_code in cases:
+            with self.subTest(argv=argv):
+                result = self.run_easy(data_dir, *argv)
+                self.assertEqual(result.returncode, expected_code, result.stdout + result.stderr)
+                self.assertTrue(result.stderr)
+                self.assertNotIn("[삭제 완료]", result.stdout)
+                self.assertNotIn("Traceback", result.stdout + result.stderr)
+                self.assertEqual(transactions.read_bytes(), before)
+
+    def test_delete_alias_help_and_original_cli_syntax_do_not_initialize_data(self) -> None:
+        """한글 삭제 도움말은 저장소를 만들지 않고, 기존 CLI는 계속 --id를 요구한다."""
+        data_dir = self.tmp / "not_created"
+        for argv in (("삭제", "--help"), ("help", "삭제")):
+            with self.subTest(argv=argv):
+                result = self.run_easy(data_dir, *argv)
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
+                self.assertIn("delete", result.stdout)
+                self.assertFalse(data_dir.exists())
+
+        result = subprocess.run(
+            [sys.executable, "-m", "budget_app", "--data-dir", str(data_dir), "delete", "TX-000002"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=ROOT,
+            timeout=15,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("--id", result.stderr)
+        self.assertFalse(data_dir.exists())
+
     def test_group_choices_and_csv_paths_with_spaces(self) -> None:
         """예산·카테고리·반복 규칙 선택과 공백 경로의 CSV 입출력이 기존 저장소에 반영된다."""
         data_dir = self.tmp / "ledger"

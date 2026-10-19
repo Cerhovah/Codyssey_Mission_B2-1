@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import cli
 from .decorators import handle_errors
-from .errors import EXIT_INTERRUPT, EXIT_OK, ValidationError
+from .errors import EXIT_INTERRUPT, EXIT_OK, EXIT_USAGE, ValidationError
 from .models import parse_amount, parse_month
 from .services import Services, build_services
 
@@ -19,15 +19,25 @@ HELP = """간편 가계부 — 할 일만 입력하고 질문에 답하세요.
   add       수입·지출 기록       list      최근 거래
   search    메모 검색           summary   월별 요약
   budget    예산 조회·설정      category  분류 관리
-  update    거래 수정           delete    거래 삭제
+  update    거래 수정           delete/삭제 거래 삭제
   import    CSV 가져오기        export    CSV 내보내기
   backup    백업                recurring 반복 규칙 관리
   help      도움말              exit      종료
 
 예: add → 질문에 답하기 → list → summary
+삭제 예: 삭제 TX-000002 또는 delete TX-000002
 자세한 안내: help add 또는 add --help
 옵션도 사용 가능: list --limit 3
 Ctrl+C: 현재 작업 취소 / 도움말: help 또는 도움말 / 종료: exit 또는 종료"""
+
+DELETE_HELP = """거래 삭제 — list에 표시된 거래 번호를 입력하세요.
+  삭제 TX-000002
+  delete TX-000002
+  delete --id TX-000002
+
+delete 또는 삭제만 입력하면 거래 번호를 질문합니다.
+번호의 대소문자는 구분하지 않습니다. 예: tx-000002, Tx-000002
+delete는 마지막 e까지 입력하세요."""
 
 GROUPS = {
     "budget": (("list", "예산 조회"), ("set", "예산 설정")),
@@ -154,6 +164,15 @@ def execute(words: list[str], options: argparse.Namespace, prompts: Prompts) -> 
         print(HELP)
         print("\n실행: python budget.py [--data-dir 폴더] [--verbose] [명령]")
         return EXIT_OK
+    if words[0].casefold() == "delet":
+        raise ValidationError("삭제 명령은 delete 또는 삭제입니다.", hint="예: 삭제 TX-000002", exit_code=EXIT_USAGE)
+    if words[0].casefold() in ("delete", "삭제"):
+        words = ["delete", *words[1:]]
+        if "--help" in words:
+            print(DELETE_HELP)
+            return EXIT_OK
+        if len(words) == 2 and not words[1].startswith("-"):
+            words = ["delete", f"--id={words[1]}"]
     if "--help" not in words:
         words = complete_command(words, prompts)
     parser = cli.build_parser()
@@ -164,6 +183,8 @@ def execute(words: list[str], options: argparse.Namespace, prompts: Prompts) -> 
     check = getattr(args, "check", None)
     if check is not None:
         check(args)
+    if args.command == "delete":
+        args.tx_id = args.tx_id.strip().upper()
     cli.configure_logging(args.verbose)
     svc = build_services(Path(args.data_dir))
     if svc.initialized:
