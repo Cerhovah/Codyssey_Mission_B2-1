@@ -281,6 +281,97 @@ class EasyModeScenario(CliTestCase):
         self.assertIn("거래가 없습니다", result.stdout)
         self.assertEqual(build_services(data_dir).transactions.list_recent(20), [])
 
+    def test_zero_interactive_values_retry_before_saving_positive_values(self) -> None:
+        """거래·예산·반복 규칙의 0 입력은 같은 항목을 재질문하고 고친 값만 한 번 저장한다."""
+        data_dir = self.tmp / "ledger"
+        result = self.run_easy(
+            data_dir,
+            input_text="\n".join([
+                "add", "2024-01-10", "1", "food", "0", "1200", "재입력 거래", "",
+                "budget set", "2024-01", "0", "20000",
+                "recurring add", "0", "15", "1", "rent", "0", "5000", "재입력 규칙", "",
+                "list", "exit", "",
+            ]),
+        )
+        self.assertEqual((result.returncode, result.stderr), (0, ""), result.stdout)
+        self.assertEqual(result.stdout.count("[오류] 금액은 양의 정수여야 합니다 (입력: 0)"), 3)
+        self.assertIn("[오류] 매월 일은 1~31 사이의 정수여야 합니다 (입력: 0)", result.stdout)
+        self.assertEqual(result.stdout.count("금액(양수 정수):"), 6)
+        self.assertEqual(result.stdout.count("매월 며칠(1~31):"), 2)
+        self.assertEqual(result.stdout.count("[저장 완료] id=TX-000001"), 1)
+        self.assertEqual(result.stdout.count("[저장 완료] id=RC-000001"), 1)
+        self.assertNotIn("Traceback", result.stdout)
+        svc = build_services(data_dir)
+        self.assertEqual([(row.id, row.amount) for row in svc.transactions.list_recent(20)], [("TX-000001", 1200)])
+        self.assertEqual(svc.budgets.summary("2024-01", 5).budget.amount, 20000)
+        self.assertEqual([(rule.day, rule.amount) for rule in svc.recurring.list_all()], [(15, 5000)])
+
+    def test_zero_options_preserve_saved_data_and_shell_accepts_next_command(self) -> None:
+        """금액 0은 종료 1, 출력 건수 0은 종료 2이며 원본을 보존하고 셸은 다음 조회를 받는다."""
+        data_dir = self.tmp / "ledger"
+        prepared = self.run_easy(
+            data_dir,
+            input_text="\n".join([
+                "add", "2024-01-10", "1", "food", "1200", "유지할 거래", "",
+                "budget set", "2024-01", "20000", "exit", "",
+            ]),
+        )
+        self.assertEqual((prepared.returncode, prepared.stderr), (0, ""), prepared.stdout)
+        before = {path.name: path.read_bytes() for path in data_dir.glob("*.jsonl")}
+        cases = [
+            (("update", "--id", "TX-000001", "--amount", "0"), 1),
+            (("budget", "set", "--month", "2024-01", "--amount", "0"), 1),
+            (("list", "--limit", "0"), 2),
+            (("search", "--limit", "0"), 2),
+            (("summary", "--month", "2024-01", "--top", "0"), 2),
+        ]
+        for argv, expected_code in cases:
+            with self.subTest(argv=argv):
+                result = self.run_easy(data_dir, *argv)
+                self.assertEqual(result.returncode, expected_code, result.stdout + result.stderr)
+                self.assertIn("양의 정수", result.stderr)
+                self.assertNotIn("Traceback", result.stdout + result.stderr)
+                self.assertEqual({path.name: path.read_bytes() for path in data_dir.glob("*.jsonl")}, before)
+
+        result = self.run_easy(data_dir, input_text="list --limit 0\nlist --limit 1\nexit\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("양의 정수", result.stderr)
+        self.assertEqual(result.stdout.count("[안내] 작업을 마치지 못했습니다."), 1)
+        self.assertEqual(result.stdout.count("TX-000001 |"), 1)
+        self.assertEqual({path.name: path.read_bytes() for path in data_dir.glob("*.jsonl")}, before)
+
+    def test_csv_zero_amount_rows_are_skipped_without_saving_zero_values(self) -> None:
+        """CSV의 0원 행은 건너뛰고 정상 행만 저장하며 전부 0원이어도 처리 결과를 보고한다."""
+        data_dir = self.tmp / "ledger"
+        source_csv = self.tmp / "zero.csv"
+        source_csv.write_text(
+            ",".join(HEADER) + "\n"
+            "2024-01-10,expense,food,0,저장하면 안 되는 거래,\n"
+            "2024-01-11,expense,food,1200,저장할 거래,\n",
+            encoding="utf-8",
+        )
+        result = self.run_easy(data_dir, "import", "--from", str(source_csv))
+        self.assertEqual((result.returncode, result.stderr), (0, ""), result.stdout)
+        self.assertIn("[완료] imported=1, skipped=1", result.stdout)
+        self.assertIn("2행: 금액은 양의 정수여야 합니다 (입력: 0)", result.stdout)
+        self.assertEqual(
+            [(row.id, row.amount, row.memo) for row in build_services(data_dir).transactions.list_recent(20)],
+            [("TX-000001", 1200, "저장할 거래")],
+        )
+
+        # 행별 오류를 건너뛰는 기존 정책은 유지하며, 저장된 거래도 바뀌지 않아야 한다.
+        before = (data_dir / "transactions.jsonl").read_bytes()
+        source_csv.write_text(
+            ",".join(HEADER) + "\n2024-01-12,expense,food,0,모든 행이 0원,\n",
+            encoding="utf-8",
+        )
+        result = self.run_easy(data_dir, "import", "--from", str(source_csv))
+        self.assertEqual((result.returncode, result.stderr), (0, ""), result.stdout)
+        self.assertIn("[완료] imported=0, skipped=1", result.stdout)
+        self.assertIn("입력: 0", result.stdout)
+        self.assertNotIn("Traceback", result.stdout)
+        self.assertEqual((data_dir / "transactions.jsonl").read_bytes(), before)
+
     def test_delete_shortcuts_normalize_ids_and_preserve_other_transactions(self) -> None:
         """영어·한글 삭제의 한 줄 입력·질문·기존 옵션은 대소문자를 정리해 지정한 거래만 지운다."""
         commands = [

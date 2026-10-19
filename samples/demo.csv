@@ -1,0 +1,6 @@
+date,type,category,amount,memo,tags
+2026-10-19,income,salary,100000,예시 용돈,sample
+2026-10-18,expense,food,8000,예시 점심,sample
+2026-10-17,expense,transport,1500,예시 버스,sample
+2026-10-16,expense,rent,30000,예시 숙박비,sample
+2026-10-15,expense,etc,5000,예시 문구 구입,sample
