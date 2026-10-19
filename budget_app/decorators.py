@@ -15,6 +15,7 @@ from typing import Callable, ParamSpec, TypeVar
 
 from .errors import EXIT_ERROR, EXIT_INTERRUPT, AppError
 
+# 감싼 함수의 인자와 반환값 타입을 데코레이터를 거쳐도 그대로 표현한다.
 P = ParamSpec("P")
 R = TypeVar("R")
 
@@ -36,6 +37,7 @@ def handle_errors(func: Callable[P, int]) -> Callable[P, int]:
 
     @functools.wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> int:
+        """알려진 오류·사용자 중단·예상 밖의 오류를 각각 정해진 결과로 바꾼다."""
         try:
             return func(*args, **kwargs)
         except AppError as err:
@@ -45,6 +47,7 @@ def handle_errors(func: Callable[P, int]) -> Callable[P, int]:
             _print_error_lines(["", "[안내] 중단했습니다"])
             return EXIT_INTERRUPT
         except Exception as exc:  # noqa: BLE001 - 마지막 방어선. 스택트레이스 대신 요약만 출력한다.
+            # 상세 호출 기록은 DEBUG 로그에 두고 일반 화면에는 원인 종류만 알린다.
             logger.debug("예기치 않은 오류 상세", exc_info=True)
             _print_error_lines(
                 [
@@ -58,6 +61,7 @@ def handle_errors(func: Callable[P, int]) -> Callable[P, int]:
 
 
 def _short_repr(value: object) -> str:
+    """로그에 담을 값의 표현을 최대 길이까지만 남긴다."""
     text = repr(value)
     if len(text) > _ARG_REPR_LIMIT:
         text = text[: _ARG_REPR_LIMIT - 3] + "..."
@@ -67,6 +71,7 @@ def _short_repr(value: object) -> str:
 def _summarize_call(func: Callable[..., object], args: tuple[object, ...], kwargs: dict[str, object]) -> str:
     """메서드라면 self를 제외하고 인자를 짧게 요약한다."""
     positional = list(args)
+    # 인스턴스 자체의 긴 표현 대신 실제로 전달한 업무 인자를 보여준다.
     if "." in func.__qualname__ and positional:
         positional = positional[1:]
     parts = [_short_repr(a) for a in positional]
@@ -79,6 +84,7 @@ def log_call(func: Callable[P, R]) -> Callable[P, R]:
 
     @functools.wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        """호출 정보를 남긴 뒤 원래 함수의 결과 또는 예외를 그대로 전달한다."""
         logger.debug("호출 %s", _summarize_call(func, args, kwargs))
         return func(*args, **kwargs)
 
@@ -90,10 +96,12 @@ def timed(func: Callable[P, R]) -> Callable[P, R]:
 
     @functools.wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        """성공하거나 오류가 발생하더라도 함수 실행에 걸린 시간을 기록한다."""
         started = time.perf_counter()
         try:
             return func(*args, **kwargs)
         finally:
+            # finally는 예외가 발생한 경우에도 실행되어 실패한 작업의 시간도 남긴다.
             elapsed_ms = (time.perf_counter() - started) * 1000
             logger.debug("%s 완료 (%.1f ms)", func.__qualname__, elapsed_ms)
 

@@ -1,4 +1,4 @@
-"""cli 계층 테스트: 진입점(entry) 을 직접 호출해 CSV 라운드트립과 종료 코드를 시나리오 단위로 확인한다 (AGENT.md 9장 P6, 10장)."""
+"""기존 CLI와 간편 진입점의 CSV 왕복·출력·종료 코드·삭제 복구를 사용자 흐름으로 확인한다."""
 from __future__ import annotations
 
 import contextlib
@@ -22,7 +22,9 @@ HEADER = ["date", "type", "category", "amount", "memo", "tags"]
 
 
 class CliTestCase(unittest.TestCase):
+    """터미널 명령 시나리오용 임시 저장소와 출력 수집 도구를 제공한다."""
     def setUp(self) -> None:
+        """실제 사용자 데이터와 분리된 임시 저장 폴더를 준비한다."""
         self._tmp = tempfile.TemporaryDirectory(prefix="budget_app_cli_")
         self.addCleanup(self._tmp.cleanup)
         self.tmp = Path(self._tmp.name)
@@ -39,6 +41,7 @@ class CliTestCase(unittest.TestCase):
         return code, lines, err.getvalue()
 
     def rows_of(self, data_dir: Path) -> set[tuple[str, str, str, int, str, str]]:
+        """번호를 제외한 거래 내용을 집합으로 만들어 CSV 왕복 결과를 비교한다."""
         svc = build_services(data_dir)
         return {(t.date, t.type, t.category, t.amount, t.memo, ",".join(t.tags)) for t in svc.transactions.list_recent(1000)}
 
@@ -47,6 +50,7 @@ class RoundTripScenario(CliTestCase):
     """샘플 import → export → 빈 폴더에 import 하면 건수와 필드가 같다 (D19, D20, D41)."""
 
     def test_import_export_roundtrip(self) -> None:
+        """CSV 가져오기·내보내기 뒤 다른 저장소에서도 거래 내용이 같은지 확인한다."""
         first = self.tmp / "first"
         code, lines, err = self.run_cli(first, "import", "--from", str(SAMPLE))
         self.assertEqual((code, err), (0, ""))
@@ -87,6 +91,7 @@ class ExitCodeScenario(CliTestCase):
     """export 조건 없음 2, import 파일 없음·헤더 불일치 1(저장 없음), BOM 파일 허용, skip 행 보고."""
 
     def test_export_and_import_failures(self) -> None:
+        """파일·헤더 오류의 종료 코드와 유효 행만 저장하는 가져오기 동작을 확인한다."""
         data_dir = self.tmp / "data"
         code, lines, err = self.run_cli(data_dir, "export", "--out", str(self.tmp / "x.csv"))
         self.assertEqual((code, lines), (2, []))
@@ -157,6 +162,7 @@ class TableFormattingScenario(CliTestCase):
         return positions
 
     def test_width_and_alignment(self) -> None:
+        """한글 표시 폭과 금액 정렬이 실제 목록 출력에도 적용되는지 확인한다."""
         self.assertEqual(display_width("food"), 4)
         self.assertEqual(display_width("식비"), 4)      # 한글 2자 = 4칸
         self.assertEqual(display_width("café"), 4)
@@ -324,6 +330,94 @@ class EasyModeScenario(CliTestCase):
                 self.assertNotIn("[삭제 완료]", result.stdout)
                 self.assertNotIn("Traceback", result.stdout + result.stderr)
                 self.assertEqual(transactions.read_bytes(), before)
+
+    def test_restore_shortcuts_work_after_delete_process_has_exited(self) -> None:
+        """삭제한 프로세스가 종료되어도 영어·한글 짧은 명령으로 원래 거래 전체를 복구한다."""
+        commands = [
+            ("restore",),
+            ("복구",),
+            ("restore", "tx-000002"),
+            ("복구", "  Tx-000002  "),
+            ("restore", "--id", "Tx-000002"),
+            ("restore", "--id=tx-000002"),
+        ]
+        for index, argv in enumerate(commands):
+            with self.subTest(argv=argv):
+                data_dir = self.tmp / f"restore_{index}"
+                code, _, err = self.run_cli(data_dir, "import", "--from", str(SAMPLE))
+                self.assertEqual((code, err), (0, ""))
+                before = {tx.id: tx for tx in build_services(data_dir).transactions.list_recent(20)}
+
+                deleted = self.run_easy(data_dir, "delete", "tx-000002")
+                self.assertEqual((deleted.returncode, deleted.stderr), (0, ""), deleted.stdout)
+                self.assertEqual(len(build_services(data_dir).transactions.list_recent(20)), 4)
+                restored = self.run_easy(data_dir, *argv, module=bool(index % 2))
+                self.assertEqual((restored.returncode, restored.stderr), (0, ""), restored.stdout)
+                self.assertIn("[복구 완료] id=TX-000002", restored.stdout)
+                self.assertEqual({tx.id: tx for tx in build_services(data_dir).transactions.list_recent(20)}, before)
+
+        # 셸의 복구 명령도 추가 질문 없이 다음 list를 명령으로 처리해야 한다.
+        data_dir = self.tmp / "shell_restore"
+        self.run_cli(data_dir, "import", "--from", str(SAMPLE))
+        result = self.run_easy(data_dir, input_text="삭제 tx-000002\n복구\nlist\nexit\n")
+        self.assertEqual((result.returncode, result.stderr), (0, ""), result.stdout)
+        self.assertIn("[복구 완료] id=TX-000002", result.stdout)
+        self.assertIn("TX-000002 |", result.stdout)
+
+    def test_core_restore_selects_id_and_duplicate_restore_keeps_saved_data(self) -> None:
+        """기존 CLI의 옵션으로 이전 삭제를 고르고 중복 복구 오류 뒤에도 전체 거래를 보존한다."""
+        data_dir = self.tmp / "ledger"
+        self.run_cli(data_dir, "import", "--from", str(SAMPLE))
+        original = {tx.id: tx for tx in build_services(data_dir).transactions.list_recent(20)}
+        for tx_id in ("TX-000002", "TX-000004"):
+            result = self.run_easy(data_dir, "delete", tx_id)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        for argv, tx_id in ((("restore", "--id", "TX-000002"), "TX-000002"), (("restore",), "TX-000004")):
+            with self.subTest(argv=argv):
+                result = subprocess.run(
+                    [sys.executable, "-m", "budget_app", "--data-dir", str(data_dir), *argv],
+                    capture_output=True, text=True, encoding="utf-8", cwd=ROOT, timeout=15,
+                )
+                self.assertEqual((result.returncode, result.stderr), (0, ""), result.stdout)
+                self.assertIn(f"[복구 완료] id={tx_id}", result.stdout)
+        self.assertEqual({tx.id: tx for tx in build_services(data_dir).transactions.list_recent(20)}, original)
+
+        saved = (data_dir / "transactions.jsonl").read_bytes()
+        code, lines, err = self.run_cli(data_dir, "restore", "--id", "TX-000002")
+        self.assertEqual((code, lines), (1, []))
+        self.assertIn("[오류]", err)
+        self.assertIn("[힌트]", err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual((data_dir / "transactions.jsonl").read_bytes(), saved)
+
+    def test_restore_help_and_invalid_ids_never_restore_an_unintended_transaction(self) -> None:
+        """복구 도움말은 파일을 만들지 않고 잘못된 번호·없는 이력은 거래를 바꾸지 않는다."""
+        help_dir = self.tmp / "not_created_restore"
+        for argv in (("restore", "--help"), ("복구", "--help"), ("help", "복구"), ("help", "restore")):
+            with self.subTest(argv=argv):
+                result = self.run_easy(help_dir, *argv)
+                self.assertEqual((result.returncode, result.stderr), (0, ""), result.stdout)
+                self.assertIn("restore", result.stdout)
+                self.assertFalse(help_dir.exists())
+
+        data_dir = self.tmp / "ledger"
+        self.run_cli(data_dir, "import", "--from", str(SAMPLE))
+        before = (data_dir / "transactions.jsonl").read_bytes()
+        cases = [
+            (("restore",), 1),
+            (("복구", "TX-2"), 1),
+            (("restore", "tx-999999"), 1),
+            (("restore", "tx-000001", "tx-000002"), 2),
+        ]
+        for argv, expected_code in cases:
+            with self.subTest(argv=argv):
+                result = self.run_easy(data_dir, *argv)
+                self.assertEqual(result.returncode, expected_code, result.stdout + result.stderr)
+                self.assertTrue(result.stderr)
+                self.assertNotIn("[복구 완료]", result.stdout)
+                self.assertNotIn("Traceback", result.stdout + result.stderr)
+                self.assertEqual((data_dir / "transactions.jsonl").read_bytes(), before)
 
     def test_delete_alias_help_and_original_cli_syntax_do_not_initialize_data(self) -> None:
         """한글 삭제 도움말은 저장소를 만들지 않고, 기존 CLI는 계속 --id를 요구한다."""

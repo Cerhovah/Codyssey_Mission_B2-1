@@ -20,6 +20,7 @@ TRANSACTION_ID_PREFIX = "TX-"
 TRANSACTION_ID_WIDTH = 6
 RECURRING_ID_PREFIX = "RC-"  # D44
 
+# 정규식은 표기 형식을, 아래 parse 함수는 실제 날짜와 허용 범위를 검사한다.
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
 _AMOUNT_RE = re.compile(r"^[0-9]+$")
@@ -44,6 +45,7 @@ def parse_date(value: str) -> str:
     if not _DATE_RE.match(text):
         raise ValidationError("날짜 형식이 올바르지 않습니다 (YYYY-MM-DD).", hint=DATE_HINT)
     try:
+        # 형식이 맞아도 2월 30일 같은 날짜는 달력 검사에서 거부한다.
         datetime.strptime(text, "%Y-%m-%d")
     except ValueError:
         raise ValidationError(f"존재하지 않는 날짜입니다: {text}", hint=DATE_HINT) from None
@@ -64,6 +66,7 @@ def parse_month(value: str) -> str:
 
 def parse_amount(value: str | int) -> int:
     """양의 정수만 허용한다 (D08). 소수·쉼표·`+` 기호·공백 섞인 값은 거부한다."""
+    # bool은 Python에서 int의 하위 타입이므로 True가 1원으로 저장되지 않게 먼저 막는다.
     if isinstance(value, bool) or not isinstance(value, (str, int)):
         raise ValidationError("금액은 양의 정수여야 합니다", hint=AMOUNT_HINT)
     if isinstance(value, int):
@@ -100,6 +103,7 @@ def parse_tags(value: str | list[str] | None) -> list[str]:
     else:
         raise ValidationError("태그는 쉼표로 구분한 문자열이어야 합니다", hint="예: meal,daily")
     result: list[str] = []
+    # 집합으로 중복을 빠르게 찾고 별도 목록으로 처음 입력한 순서를 유지한다.
     seen: set[str] = set()
     for part in parts:
         if not isinstance(part, str):
@@ -147,6 +151,7 @@ def transaction_number(tx_id: str) -> int:
 
 def parse_day(value: str | int) -> int:
     """반복 내역의 매월 일: 1~31 정수 (D44). 그 달에 없는 날은 apply 시 말일로 보정한다."""
+    # 금액과 마찬가지로 참/거짓은 날짜를 뜻하는 정수로 인정하지 않는다.
     if isinstance(value, bool) or not isinstance(value, (str, int)):
         raise ValidationError("매월 일은 1~31 사이의 정수여야 합니다", hint=DAY_HINT)
     if isinstance(value, int):
@@ -183,12 +188,14 @@ def recurring_number(rule_id: str) -> int:
 
 
 def _require_mapping(data: object, what: str) -> dict[str, Any]:
+    """JSON 값이 배열·숫자가 아닌 키와 값을 가진 객체인지 확인한다."""
     if not isinstance(data, dict):
         raise ValidationError(f"{what} 레코드는 JSON 객체여야 합니다")
     return data
 
 
 def _require_str(data: dict[str, Any], key: str) -> str:
+    """저장 레코드에서 필수 문자열을 꺼내며 누락과 타입 오류를 함께 검사한다."""
     value = data.get(key)
     if not isinstance(value, str):
         raise ValidationError(f"필수 항목 '{key}'이(가) 없거나 문자열이 아닙니다")
@@ -196,6 +203,7 @@ def _require_str(data: dict[str, Any], key: str) -> str:
 
 
 def _require_int(data: dict[str, Any], key: str) -> int:
+    """필수 정수 항목을 꺼낸다. JSON의 참/거짓은 정수로 인정하지 않는다."""
     value = data.get(key)
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValidationError(f"필수 항목 '{key}'이(가) 없거나 정수가 아닙니다")
@@ -212,6 +220,7 @@ class Transaction:
     amount: int
     category: str
     memo: str = ""
+    # 거래마다 새 목록을 만들어 한 거래의 태그 수정이 다른 거래에 전파되지 않게 한다.
     tags: list[str] = field(default_factory=list)
 
     def sort_key(self) -> tuple[str, str]:
@@ -219,6 +228,7 @@ class Transaction:
         return (self.date, self.id)
 
     def to_dict(self) -> dict[str, Any]:
+        """JSONL에 저장할 키와 값으로 바꾸고 태그 목록은 별도 복사한다."""
         return {
             "id": self.id,
             "type": self.type,
@@ -236,6 +246,7 @@ class Transaction:
         tx_id = _require_str(record, "id").strip()
         if not tx_id:
             raise ValidationError("필수 항목 'id'이(가) 비어 있습니다")
+        # JSON의 각 값을 검증 함수로 정규화한다. 카테고리 존재 여부는 서비스가 검사한다.
         return cls(
             id=tx_id,
             type=parse_type(_require_str(record, "type")),
@@ -254,10 +265,12 @@ class Category:
     name: str
 
     def to_dict(self) -> dict[str, Any]:
+        """카테고리 이름 하나를 저장용 JSON 객체로 바꾼다."""
         return {"name": self.name}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Category:
+        """저장 객체의 필수 이름을 확인하고 카테고리 모델을 만든다."""
         record = _require_mapping(data, "카테고리")
         return cls(name=parse_category_name(_require_str(record, "name")))
 
@@ -270,10 +283,12 @@ class Budget:
     amount: int
 
     def to_dict(self) -> dict[str, Any]:
+        """월과 금액을 저장용 JSON 객체로 바꾼다."""
         return {"month": self.month, "amount": self.amount}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Budget:
+        """저장 객체의 월 형식과 양수 금액을 검사해 예산 모델을 만든다."""
         record = _require_mapping(data, "예산")
         return cls(
             month=parse_month(_require_str(record, "month")),
@@ -291,9 +306,11 @@ class RecurringRule:
     amount: int
     category: str
     memo: str = ""
+    # 반복 규칙마다 독립된 태그 목록을 갖는다.
     tags: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        """반복 거래를 만들 재료를 저장 객체로 바꾸고 태그 목록은 복사한다."""
         return {
             "id": self.id,
             "day": self.day,
@@ -306,6 +323,7 @@ class RecurringRule:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RecurringRule:
+        """번호·매월 일·거래 항목을 검증하여 저장된 반복 규칙을 읽는다."""
         record = _require_mapping(data, "반복 내역")
         rule_id = _require_str(record, "id").strip()
         if not rule_id:

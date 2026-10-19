@@ -12,9 +12,10 @@ from .decorators import handle_errors
 
 @handle_errors
 def entry(argv: list[str] | None = None) -> int:
-    """CLI 진입 함수. 반환값이 곧 종료 코드다."""
+    """CLI에 인자를 전달하고 처리 결과를 돌려준다. None이면 터미널 인자를 사용한다."""
     return main(argv)
 
 
 if __name__ == "__main__":
+    # import할 때는 실행하지 않고, -m으로 시작했을 때만 종료 코드를 전달한다.
     sys.exit(entry())

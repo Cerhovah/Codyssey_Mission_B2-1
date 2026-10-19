@@ -5,6 +5,7 @@ P4: TransactionService.search(D28, D38), BudgetService.set_budget/list_all/summa
 P5: TransactionService.update/delete, CategoryService.remove(D03, D18, D40). 재작성은 명령당 최대 1회.
 P6: TransactionService.import_csv/export_csv(D19, D20, D41). CSV 는 교환 포맷이며 저장 포맷은 JSONL 그대로다.
 P7: Services.backup(D43). P9(예비): RecurringService(D44). argparse·print·input 은 여기서 쓰지 않는다.
+D47: 삭제 전에 원본을 보관하고 restore로 원래 번호와 필드를 복구한다.
 """
 from __future__ import annotations
 
@@ -74,6 +75,7 @@ class MonthlySummary:
 
     @property
     def balance(self) -> int:
+        """별도 저장값 없이 집계된 수입과 지출에서 해당 월의 잔액을 계산한다."""
         return self.income - self.expense
 
 
@@ -129,7 +131,10 @@ def require_category(categories: CategoryStore, name: str) -> str:
 
 
 class CategoryService:
+    """분류를 관리하고 사용 중인 분류를 없앨 때 거래의 참조를 보호한다."""
+
     def __init__(self, categories: CategoryStore, transactions: TransactionRepository) -> None:
+        """분류 저장소와 사용 여부를 확인할 거래 저장소를 함께 연결한다."""
         self.categories = categories
         self.transactions = transactions
 
@@ -172,6 +177,7 @@ class CategoryService:
                 hint="--replace <대체카테고리> 를 지정하면 해당 거래를 옮긴 뒤 삭제합니다.",
             )
         if in_use:
+            # 거래의 분류 이동이 성공한 뒤에만 기존 분류를 제거한다.
             self.transactions.rewrite(
                 replace_fields(tx, category=target) if tx.category == clean else tx
                 for tx in self.transactions.iter_all()
@@ -181,7 +187,10 @@ class CategoryService:
 
 
 class TransactionService:
+    """거래의 검증·추가·조회·변경과 CSV 교환을 조합하는 업무 계층이다."""
+
     def __init__(self, transactions: TransactionRepository, categories: CategoryStore) -> None:
+        """거래 저장소와 등록된 분류의 존재를 검사할 저장소를 연결한다."""
         self.transactions = transactions
         self.categories = categories
 
@@ -236,6 +245,7 @@ class TransactionService:
         needle = query.strip().casefold() if _given(query) else None
 
         def matches(tx: Transaction) -> bool:
+            """하나라도 어긋나면 제외해 지정된 검색 조건을 모두 만족하게 한다."""
             if start is not None and tx.date < start:
                 return False
             if end is not None and tx.date > end:
@@ -252,6 +262,7 @@ class TransactionService:
 
         passed: Iterator[Transaction] = (tx for tx in self.transactions.iter_all() if matches(tx))
         if limit is not None:
+            # 제한이 있으면 출력 후보만 유지하고, 없으면 일치한 결과만 정렬한다.
             return heapq.nlargest(limit, passed, key=Transaction.sort_key)
         return sorted(passed, key=Transaction.sort_key, reverse=True)
 
@@ -284,6 +295,7 @@ class TransactionService:
         if not changes:
             raise ValidationError("수정할 항목이 없습니다", hint="--date --type --category --amount --memo --tags 중 하나 이상")
 
+        # 입력값과 대상 존재를 먼저 확인한 뒤 파일을 한 번만 교체한다.
         current = find_transaction(self.transactions, tx_id)
         updated = replace_fields(current, **changes)  # type: ignore[arg-type]
         self.transactions.rewrite(updated if tx.id == updated.id else tx for tx in self.transactions.iter_all())
@@ -291,9 +303,49 @@ class TransactionService:
 
     @log_call
     def delete(self, tx_id: str) -> Transaction:
-        """대상 존재 확인 → 그 거래만 빼고 원자적 재작성 1회 (D21, D40)."""
+        """대상 확인 → 원본 보관 → 그 거래만 빼고 원자적 재작성한다 (D21, D40, D47)."""
         target = find_transaction(self.transactions, tx_id)
+        # 보관 완료 후 삭제해야 복구할 원본을 잃지 않는다. 재작성 실패 시 활성 원본도 남는다.
+        self.transactions.archive(target)
         self.transactions.rewrite(tx for tx in self.transactions.iter_all() if tx.id != target.id)
+        return target
+
+    @log_call
+    def restore(self, tx_id: str | None = None) -> Transaction:
+        """마지막 삭제 기록 또는 지정한 번호의 마지막 원본을 그대로 복구한다 (D47)."""
+        clean = tx_id.strip() if tx_id is not None else None
+        if clean is not None:
+            transaction_number(clean)
+
+        target: Transaction | None = None
+        # 뒤에서 다시 삭제된 같은 번호가 있으면 가장 나중의 원본을 사용한다.
+        # 전체 이력을 리스트로 모으지 않고 후보 한 건만 갱신한다.
+        for deleted in self.transactions.iter_deleted():
+            if clean is None or deleted.id == clean:
+                target = deleted
+        if target is None:
+            detail = f": {clean}" if clean is not None else ""
+            raise NotFoundError(
+                f"복구할 삭제 기록이 없습니다{detail}",
+                hint="삭제 복구 기능을 추가한 뒤 삭제한 거래만 restore로 복구할 수 있습니다.",
+            )
+
+        if any(tx.id == target.id for tx in self.transactions.iter_all()):
+            # 삭제 뒤 번호가 재사용되었어도 기존 거래를 덮어쓰거나 다른 번호로 추측하지 않는다.
+            raise ConflictError(
+                f"이미 사용 중인 거래 번호라 복구할 수 없습니다: {target.id}",
+                hint="list로 현재 거래를 확인하세요. 이미 복구했거나 새 거래에 같은 번호가 발급되었습니다.",
+            )
+        require_category(self.categories, target.category)
+
+        def restored() -> Iterator[Transaction]:
+            """활성 거래를 모두 유지한 뒤 원래 번호와 필드를 가진 복구 원본을 더한다."""
+            yield from self.transactions.iter_all()
+            yield target
+
+        # 저장 도중 실패해도 기존 활성 파일이 손상되지 않도록 임시 파일 교체를 재사용한다.
+        self.transactions.rewrite(restored())
+        # 삭제 이력을 지우지 않아 보관본을 유지한다. 중복 복구는 위의 번호 검사로 막는다.
         return target
 
     @log_call
@@ -309,6 +361,7 @@ class TransactionService:
                 header = reader.fieldnames or []
                 missing = [column for column in CSV_COLUMNS if column not in header]
                 if missing:
+                    # 헤더 오류는 어느 행도 저장하기 전에 끝내 부분 가져오기를 피한다.
                     raise ValidationError(
                         f"CSV 헤더가 올바르지 않습니다 (누락: {', '.join(missing)})", hint=CSV_HEADER_HINT
                     )
@@ -318,6 +371,7 @@ class TransactionService:
                     try:
                         tx = self._from_csv_row(row, format_transaction_id(number))
                     except AppError as err:
+                        # 행의 입력 오류만 건너뛴다. 실제 파일 저장 실패는 호출자에게 전파한다.
                         result.skipped.append((line_no, err.message))
                         continue
                     self.transactions.append(tx)
@@ -337,6 +391,7 @@ class TransactionService:
         """CSV 한 행 → Transaction. 비어 있거나 모자란 열은 빈 문자열로 본다 (D41)."""
 
         def cell(column: str) -> str:
+            """누락되거나 비문자열인 셀을 빈 값으로 통일해 기존 필드 검증에 맡긴다."""
             value = row.get(column)
             return value if isinstance(value, str) else ""
 
@@ -367,6 +422,7 @@ class TransactionService:
             raise ValidationError("기간 조건이 필요합니다", hint="--month YYYY-MM 또는 --from/--to YYYY-MM-DD")
 
         def matches(tx: Transaction) -> bool:
+            """월과 날짜 범위가 함께 있으면 교집합에 속한 거래만 내보낸다."""
             if target_month is not None and tx.date[:7] != target_month:
                 return False
             if start is not None and tx.date < start:
@@ -391,7 +447,10 @@ class TransactionService:
 
 
 class BudgetService:
+    """월 예산의 저장과 거래를 읽어 만드는 월별 요약을 담당한다."""
+
     def __init__(self, budgets: BudgetStore, transactions: TransactionRepository) -> None:
+        """예산 비교 기준과 집계 대상 거래를 각각의 저장소에서 읽도록 연결한다."""
         self.budgets = budgets
         self.transactions = transactions
 
@@ -423,6 +482,7 @@ class BudgetService:
             elif tx.type == TYPE_EXPENSE:
                 expense += tx.amount
                 by_category[tx.category] = by_category.get(tx.category, 0) + tx.amount
+        # 지출이 같으면 이름순으로 정렬해 매번 같은 순위가 나오도록 한다.
         ranked = sorted(by_category.items(), key=lambda item: (-item[1], item[0]))[:top]
         return MonthlySummary(
             month=target,
@@ -451,6 +511,7 @@ class RecurringService:
     """반복 내역 규칙 등록·조회·삭제와 월별 적용 (보너스 B2, D44)."""
 
     def __init__(self, recurring: RecurringStore, transactions: TransactionRepository, categories: CategoryStore) -> None:
+        """규칙 저장소와 실제 거래 저장소, 카테고리 검증 저장소를 연결한다."""
         self.recurring = recurring
         self.transactions = transactions
         self.categories = categories
@@ -486,6 +547,7 @@ class RecurringService:
 
     @log_call
     def remove(self, rule_id: str) -> RecurringRule:
+        """규칙 번호의 형식을 확인한 뒤 등록 규칙을 지운다. 생성 거래는 보존한다."""
         clean = rule_id.strip()
         recurring_number(clean)
         return self.recurring.remove(clean)
@@ -517,8 +579,10 @@ class RecurringService:
             try:
                 category = require_category(self.categories, rule.category)
             except AppError as err:
+                # 분류가 사라진 규칙도 보고에 남기고 나머지 유효 규칙을 계속 처리한다.
                 result.skipped.append((rule.id, err.message))
                 continue
+            # 31일 규칙도 짧은 달에 적용할 수 있도록 그달의 마지막 날까지만 사용한다.
             tx = Transaction(
                 id=format_transaction_id(number),
                 type=rule.type,
@@ -547,7 +611,7 @@ class Services:
 
     @log_call
     def backup(self) -> Path:
-        """`{data_dir}/backups/{YYYYMMDD-HHMMSS}/` 에 3개 파일을 복사하고 그 경로를 돌려준다 (B1, D43).
+        """`{data_dir}/backups/{YYYYMMDD-HHMMSS}/` 에 네 파일을 복사하고 그 경로를 돌려준다 (B1, D43).
 
         같은 초에 다시 실행해 폴더가 이미 있으면 `-1`, `-2`, … 를 붙여 덮어쓰지 않는다.
         """
@@ -565,6 +629,7 @@ class Services:
 def build_services(data_dir: Path) -> Services:
     """저장 폴더를 초기화(D04, D23, D36)하고 저장소와 서비스를 조립한다. 안내 출력은 cli 가 맡는다."""
     initialized = ensure_initialized(data_dir)
+    # 같은 저장소 객체를 공유해 모든 서비스가 동일한 가계부 파일을 사용하게 한다.
     tx_repo = TransactionRepository(JsonlStore(data_dir / TRANSACTIONS_FILE))
     category_store = CategoryStore(JsonlStore(data_dir / CATEGORIES_FILE))
     budget_store = BudgetStore(JsonlStore(data_dir / BUDGETS_FILE))

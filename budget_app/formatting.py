@@ -29,12 +29,14 @@ def _render(rows: list[list[str]], aligns: tuple[str, ...], min_widths: tuple[in
     if not rows:
         return []
     columns = len(aligns)
+    # len()은 한글도 한 글자로 세므로 터미널에서 차지하는 칸 수를 따로 계산한다.
     widths = [
         max([min_widths[i], *(display_width(row[i]) for row in rows)]) for i in range(columns)
     ]
     lines: list[str] = []
     for row in rows:
         cells = [pad(row[i], widths[i], aligns[i]) for i in range(columns - 1)]
+        # 마지막 열 뒤에는 공백을 붙이지 않아 줄 끝에 불필요한 여백을 남기지 않는다.
         cells.append(row[columns - 1])
         lines.append(SEPARATOR.join(cells))
     return lines
@@ -46,10 +48,12 @@ def format_amount(amount: int) -> str:
 
 
 def format_won(amount: int) -> str:
+    """숫자 표기에 원 단위를 덧붙인다."""
     return f"{format_amount(amount)}원"
 
 
 def _transaction_cells(tx: Transaction) -> list[str]:
+    """거래 모델을 화면의 열 순서에 맞는 문자열 목록으로 바꾼다."""
     return [tx.id, tx.date, tx.type, tx.category, format_amount(tx.amount), tx.memo]
 
 
@@ -67,6 +71,7 @@ def format_transaction_table(transactions: Iterable[Transaction]) -> list[str]:
 
 
 def format_budget_row(budget: Budget) -> str:
+    """월과 예산 금액을 한 줄로 표시한다. 여러 행 사이의 너비는 맞추지 않는다."""
     return f"{budget.month}{SEPARATOR}{format_won(budget.amount)}"
 
 
@@ -75,11 +80,13 @@ def format_budget_table(budgets: Iterable[Budget]) -> list[str]:
     rows = [[budget.month, format_won(budget.amount)] for budget in budgets]
     if not rows:
         return []
+    # 각 행의 금액을 가장 긴 금액에 맞춰 오른쪽 정렬한다.
     width = max(display_width(row[1]) for row in rows)
     return [f"{row[0]}{SEPARATOR}{pad(row[1], width, 'right')}" for row in rows]
 
 
 def format_category_row(name: str) -> str:
+    """카테고리 이름 앞에 목록 표시를 붙인다."""
     return f"- {name}"
 
 

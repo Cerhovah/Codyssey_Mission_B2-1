@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+# 운영체제나 자동 검증이 결과를 구분할 수 있도록 모든 진입점에서 같은 값을 쓴다.
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_USAGE = 2
@@ -14,6 +15,7 @@ class AppError(Exception):
     """사용자에게 보여 줄 오류. 원인(message)과 해결 힌트(hint), 종료 코드를 가진다."""
 
     def __init__(self, message: str, hint: str = "", exit_code: int = EXIT_ERROR) -> None:
+        """표시할 원인·해결 방법·종료 코드를 예외 하나에 함께 보관한다."""
         super().__init__(message)
         self.message = message
         self.hint = hint
@@ -27,6 +29,7 @@ class AppError(Exception):
         return lines
 
     def __str__(self) -> str:
+        """CSV 행별 오류 사유 등 문자열이 필요한 곳에는 원인만 제공한다."""
         return self.message
 
 

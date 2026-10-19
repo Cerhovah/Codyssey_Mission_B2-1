@@ -1,4 +1,4 @@
-"""services 계층 테스트: 카테고리·거래 추가·목록(P3), 검색·월별 요약·예산(P4)을 시나리오 단위로 확인한다 (AGENT.md 10장)."""
+"""서비스의 거래 관리·검색·집계·백업·반복·삭제 복구를 독립된 임시 자료로 확인한다."""
 from __future__ import annotations
 
 import tempfile
@@ -13,7 +13,9 @@ from budget_app.services import Services, build_services
 
 
 class ServicesTestCase(unittest.TestCase):
+    """서비스 계층 시나리오에서 사용할 독립 저장소와 공통 거래 자료를 준비한다."""
     def setUp(self) -> None:
+        """실제 사용자 데이터와 분리된 임시 저장 폴더를 준비한다."""
         self._tmp = tempfile.TemporaryDirectory(prefix="budget_app_svc_")
         self.addCleanup(self._tmp.cleanup)
         self.data_dir = Path(self._tmp.name) / "data"
@@ -23,6 +25,7 @@ class ServicesTestCase(unittest.TestCase):
         self, date: str, type_: str = "expense", category: str = "food", amount: int = 1000,
         memo: str = "", tags: str = "",
     ) -> str:
+        """간단한 인자로 거래를 추가하고 후속 시나리오에서 쓸 번호만 돌려준다."""
         return self.svc.transactions.add(
             date=date, type_=type_, category=category, amount=amount, memo=memo, tags=tags
         ).id
@@ -40,6 +43,7 @@ class BuildAndCategoryScenario(ServicesTestCase):
     """build_services 가 초기화하고(D36), CategoryService 는 정렬·정규화·중복 오류를 지킨다 (D12, D26, D35)."""
 
     def test_initialization_and_category_management(self) -> None:
+        """조립 시 초기화와 카테고리 추가·조회·오류 힌트를 검증한다."""
         self.assertTrue(self.svc.initialized)
         self.assertFalse(build_services(self.data_dir).initialized)  # 두 번째 조립은 새로 만든 것이 없다
         self.assertEqual(self.svc.categories.list_names(), sorted(DEFAULT_CATEGORIES))
@@ -65,6 +69,7 @@ class TransactionAddScenario(ServicesTestCase):
     """add: 검증 조합, 미등록 카테고리 실패, id 가 1부터 증가 (D05, D08~D11)."""
 
     def test_add_validates_and_assigns_increasing_ids(self) -> None:
+        """정상 입력 정규화와 잘못된 입력 거부 후 번호·저장 건수 보존을 확인한다."""
         tx = self.svc.transactions.add(
             date=" 2024-01-15 ", type_="Expense", category="food", amount="15000", memo=" 점심 ", tags="meal, daily,meal"
         )
@@ -96,6 +101,7 @@ class ListRecentScenario(ServicesTestCase):
     """list_recent: 날짜 내림차순, 같은 날짜는 id 내림차순, limit 만큼만 (D06, D07, D27)."""
 
     def test_order_and_limit(self) -> None:
+        """거래 날짜와 번호의 내림차순 및 조회 개수 제한을 확인한다."""
         self.assertEqual(self.svc.transactions.list_recent(20), [])
         ids = [
             self.add("2024-01-15"),            # TX-000001
@@ -115,9 +121,11 @@ class SearchScenario(ServicesTestCase):
     """search: 조건 AND, 최신순 정렬, limit, 날짜 검증 (D28, D38)."""
 
     def ids(self, **kwargs: object) -> list[str]:
+        """검색 결과를 번호 목록으로 바꿔 필터별 결과를 비교한다."""
         return [tx.id for tx in self.svc.transactions.search(**kwargs)]  # type: ignore[arg-type]
 
     def test_conditions_sorting_and_limit(self) -> None:
+        """검색 조건의 교집합·최신순·제한과 잘못된 기간 처리를 확인한다."""
         self.seed_january()
         self.assertEqual(self.ids(), ["TX-000003", "TX-000002", "TX-000001", "TX-000004", "TX-000005"])  # 조건 없음 = 전체 최신순
         self.assertEqual(self.ids(type_=" Income "), ["TX-000001"])
@@ -147,6 +155,7 @@ class SummaryAndBudgetScenario(ServicesTestCase):
     """summary 집계·TOP·데이터 없음·예산, budget 덮어쓰기·정렬 (D16, D17, D25, D39)."""
 
     def test_summary_and_budget(self) -> None:
+        """월별 합계·분류 순위·빈 달과 예산 변경을 한 흐름으로 확인한다."""
         empty = self.svc.budgets.summary("2024-01", 5)
         self.assertEqual((empty.count, empty.income, empty.expense, empty.budget, empty.top_expenses), (0, 0, 0, None, []))
 
@@ -186,9 +195,11 @@ class UpdateDeleteScenario(ServicesTestCase):
     """update 부분 수정·검증 실패·없는 id, delete 성공·없는 id·건수 감소, 다른 거래 보존 (D03, D21, D40)."""
 
     def snapshot(self) -> list[tuple[str, str, str, int, str, str, list[str]]]:
+        """거래의 모든 필드를 모아 수정·실패 전후의 보존 여부를 비교한다."""
         return [(t.id, t.type, t.date, t.amount, t.category, t.memo, t.tags) for t in self.svc.transactions.list_recent(100)]
 
     def test_update_then_delete(self) -> None:
+        """부분 수정과 실패 시 보존을 검증한 뒤 지정한 거래만 삭제한다."""
         self.seed_january()
         before = self.snapshot()
         raw_before = (self.data_dir / "transactions.jsonl").read_bytes()
@@ -237,10 +248,149 @@ class UpdateDeleteScenario(ServicesTestCase):
         self.assertEqual(sorted(p.name for p in self.data_dir.iterdir() if p.suffix == ".tmp"), [])
 
 
+class RestoreScenario(ServicesTestCase):
+    """삭제 이력의 지속성·대상 선택·충돌 차단과 저장 실패 시 원본 보존을 확인한다."""
+
+    def test_restore_after_reopening_preserves_original_fields_and_other_transactions(self) -> None:
+        """다시 조립한 서비스도 최근 삭제를 찾아 원래 번호·태그·나머지 거래를 보존한다."""
+        self.seed_january()
+        original = {tx.id: tx for tx in self.svc.transactions.list_recent(100)}
+        deleted = self.svc.transactions.delete("TX-000002")
+        self.assertEqual(deleted, original["TX-000002"])
+        self.assertEqual(len(self.svc.transactions.list_recent(100)), 4)
+
+        # 프로세스 메모리를 사용하지 않고 파일에 남은 이력으로 복구해야 한다.
+        reopened = build_services(self.data_dir)
+        self.assertEqual(reopened.transactions.restore(), original["TX-000002"])
+        self.assertEqual({tx.id: tx for tx in reopened.transactions.list_recent(100)}, original)
+        self.assertEqual(list(reopened.transactions.transactions.iter_deleted()), [deleted])
+        with self.assertRaises(ConflictError):
+            reopened.transactions.restore()
+        self.assertEqual({tx.id: tx for tx in reopened.transactions.list_recent(100)}, original)
+
+    def test_restore_selects_older_id_and_latest_revision_without_overwriting(self) -> None:
+        """명시한 번호의 최근 삭제본을 선택하고 이미 활성화된 번호의 덮어쓰기를 막는다."""
+        self.seed_january()
+        first = self.svc.transactions.delete("TX-000002")
+        latest = self.svc.transactions.delete("TX-000004")
+        self.assertEqual(self.svc.transactions.restore("TX-000002"), first)
+        self.assertEqual(self.svc.transactions.restore(), latest)
+
+        # 복구한 거래를 수정하고 다시 지웠다면 같은 번호의 최신 필드가 복구된다.
+        revised = self.svc.transactions.update(first.id, amount="19000", memo="변경된 점심", tags="meal,new")
+        self.svc.transactions.delete(first.id)
+        self.assertEqual(self.svc.transactions.restore(first.id), revised)
+        raw_before = (self.data_dir / "transactions.jsonl").read_bytes()
+        with self.assertRaises(ConflictError):
+            self.svc.transactions.restore(first.id)
+        self.assertEqual((self.data_dir / "transactions.jsonl").read_bytes(), raw_before)
+
+        # 기존 번호 발급 정책상 최대 번호를 삭제하면 재사용될 수 있다. 새 거래를 덮어쓰면 안 된다.
+        self.svc.transactions.delete("TX-000005")
+        reused_id = self.add("2024-02-01", memo="새 거래")
+        self.assertEqual(reused_id, "TX-000005")
+        current = {tx.id: tx for tx in self.svc.transactions.list_recent(100)}
+        with self.assertRaises(ConflictError):
+            self.svc.transactions.restore(reused_id)
+        self.assertEqual({tx.id: tx for tx in self.svc.transactions.list_recent(100)}, current)
+
+    def test_missing_history_and_missing_category_do_not_consume_saved_history(self) -> None:
+        """이력 없음과 카테고리 누락은 저장을 바꾸지 않으며 분류를 재등록하면 복구할 수 있다."""
+        with self.assertRaises(NotFoundError):
+            self.svc.transactions.restore()
+        with self.assertRaises(NotFoundError):
+            self.svc.transactions.restore("TX-999999")
+        with self.assertRaises(ValidationError):
+            self.svc.transactions.restore("TX-2")
+
+        self.svc.categories.add("cafe")
+        tx_id = self.add("2024-01-15", category="cafe", amount=4500, memo="커피", tags="drink")
+        deleted = self.svc.transactions.delete(tx_id)
+        archive = self.data_dir / "backups" / "deleted.jsonl"
+        archived_before = archive.read_bytes()
+        self.svc.categories.remove("cafe")
+        with self.assertRaises(NotFoundError):
+            self.svc.transactions.restore(tx_id)
+        self.assertEqual(self.svc.transactions.list_recent(100), [])
+        self.assertEqual(archive.read_bytes(), archived_before)
+
+        self.svc.categories.add("cafe")
+        self.assertEqual(self.svc.transactions.restore(tx_id), deleted)
+        self.assertEqual(archive.read_bytes(), archived_before)
+
+    def test_failed_archiving_or_missing_target_never_rewrites_active_transactions(self) -> None:
+        """삭제 이력이 안전하게 저장되기 전에는 원본을 다시 쓰지 않는다."""
+        self.seed_january()
+        repository = self.svc.transactions.transactions
+        original = (self.data_dir / "transactions.jsonl").read_bytes()
+        with mock.patch.object(repository, "archive", side_effect=StorageError("이력 저장 실패")) as archive:
+            with mock.patch.object(repository, "rewrite") as rewrite:
+                with self.assertRaises(StorageError):
+                    self.svc.transactions.delete("TX-000002")
+                archive.assert_called_once()
+                rewrite.assert_not_called()
+        self.assertEqual((self.data_dir / "transactions.jsonl").read_bytes(), original)
+
+        # 존재하지 않는 번호의 삭제 요청은 잘못된 복구 기록을 만들지 않는다.
+        with mock.patch.object(repository, "archive") as archive:
+            with self.assertRaises(NotFoundError):
+                self.svc.transactions.delete("TX-999999")
+            archive.assert_not_called()
+        self.assertEqual((self.data_dir / "transactions.jsonl").read_bytes(), original)
+
+    def test_corrupt_deleted_history_blocks_delete_and_preserves_both_files(self) -> None:
+        """이력의 앞부분이 정상이더라도 뒤에 손상 줄이 있으면 삭제와 추가 보관을 막는다."""
+        self.seed_january()
+        self.svc.transactions.delete("TX-000003")
+        archive = self.data_dir / "backups" / "deleted.jsonl"
+        archive.write_bytes(archive.read_bytes() + "{손상된 마지막 줄\n".encode("utf-8"))
+        active_before = (self.data_dir / "transactions.jsonl").read_bytes()
+        archive_before = archive.read_bytes()
+
+        with self.assertRaises(StorageError):
+            self.svc.transactions.delete("TX-000002")
+        self.assertEqual((self.data_dir / "transactions.jsonl").read_bytes(), active_before)
+        self.assertEqual(archive.read_bytes(), archive_before)
+
+    def test_failed_archive_sync_stops_before_active_file_rewrite(self) -> None:
+        """보관 파일의 디스크 동기화가 실패하면 활성 파일 재작성 자체를 시작하지 않는다."""
+        self.seed_january()
+        self.svc.transactions.delete("TX-000003")
+        archive = self.data_dir / "backups" / "deleted.jsonl"
+        archive_before = archive.read_bytes()
+        active_before = (self.data_dir / "transactions.jsonl").read_bytes()
+        repository = self.svc.transactions.transactions
+        # 저장소 구현의 fsync를 실패시켜 실제 archive 경로를 지나게 한다.
+        # TransactionRepository.rewrite만 감시하므로 삭제 이력의 JsonlStore.rewrite는 실제로 실행된다.
+        with mock.patch("budget_app.repository.os.fsync", side_effect=OSError("디스크 동기화 실패")) as sync:
+            with mock.patch.object(repository, "rewrite") as rewrite:
+                with self.assertRaises(StorageError):
+                    self.svc.transactions.delete("TX-000002")
+                sync.assert_called_once()
+                rewrite.assert_not_called()
+        self.assertEqual((self.data_dir / "transactions.jsonl").read_bytes(), active_before)
+        self.assertEqual(archive.read_bytes(), archive_before)
+
+    def test_failed_restore_write_preserves_active_transactions_and_deleted_history(self) -> None:
+        """복구 파일 쓰기가 실패해도 기존 거래와 삭제 이력을 보존해 다시 복구할 수 있다."""
+        self.seed_january()
+        deleted = self.svc.transactions.delete("TX-000002")
+        active_before = (self.data_dir / "transactions.jsonl").read_bytes()
+        archive = self.data_dir / "backups" / "deleted.jsonl"
+        archive_before = archive.read_bytes()
+        with mock.patch("budget_app.repository.os.fsync", side_effect=OSError("복구 쓰기 실패")):
+            with self.assertRaises(StorageError):
+                self.svc.transactions.restore(deleted.id)
+        self.assertEqual((self.data_dir / "transactions.jsonl").read_bytes(), active_before)
+        self.assertEqual(archive.read_bytes(), archive_before)
+        self.assertEqual(self.svc.transactions.restore(deleted.id), deleted)
+
+
 class CategoryRemoveScenario(ServicesTestCase):
     """category remove: 없음·차단·--replace 재배정·자기 자신 거부·미사용 즉시 삭제 (D18, D40)."""
 
     def test_remove_paths(self) -> None:
+        """사용 중 분류 삭제를 차단하고 대체 분류 지정 시 거래를 보존하며 옮긴다."""
         self.seed_january()  # food 2건, transport 1건, salary 1건, rent 1건
         with self.assertRaises(NotFoundError):
             self.svc.categories.remove("cafe")
@@ -272,9 +422,10 @@ class CategoryRemoveScenario(ServicesTestCase):
 
 
 class BackupScenario(ServicesTestCase):
-    """backup: 타임스탬프 폴더에 파일 3개 복사, 같은 초 재실행은 -1/-2 접미사, 원본과 내용 동일 (B1, D43)."""
+    """backup: 타임스탬프 폴더에 파일 4개 복사, 같은 초 재실행은 -1/-2 접미사, 원본과 내용 동일 (B1, D43)."""
 
     def test_backup_creates_three_files_and_never_overwrites(self) -> None:
+        """백업 파일 네 개의 내용과 같은 시각 재실행 시 폴더 분리를 확인한다."""
         self.seed_january()
         self.svc.budgets.set_budget("2024-01", 100000)
         with mock.patch("budget_app.services._backup_stamp", return_value="20240131-093000"):
@@ -309,6 +460,7 @@ class RecurringScenario(ServicesTestCase):
     """반복 내역(B2, D44): add 검증·id, list, apply 생성·말일 보정·중복 방지·미등록 카테고리 skip, remove."""
 
     def test_add_list_apply_remove(self) -> None:
+        """반복 규칙 등록부터 말일 보정·중복 차단·분류 누락·삭제까지 확인한다."""
         self.assertEqual(self.svc.recurring.list_all(), [])
         self.assertEqual(self.svc.recurring.apply("2024-02").rule_count, 0)
         self.assertEqual(self.svc.transactions.list_recent(10), [])

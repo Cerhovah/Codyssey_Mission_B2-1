@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-"""짧은 명령과 질문을 기존 CLI로 연결하는 간편 모드(D45)."""
+"""짧은 명령과 질문을 기존 CLI로 연결하는 간편 모드(D45~D47).
+
+실제 거래 검증과 저장은 기존 서비스에 맡긴다. 이 모듈은 입력을 쉽게 바꾸고
+명령 하나의 오류 때문에 전체 대화가 끝나지 않도록 실행 흐름을 조정한다.
+"""
 
 import argparse
 import shlex
@@ -22,10 +26,12 @@ HELP = """간편 가계부 — 할 일만 입력하고 질문에 답하세요.
   update    거래 수정           delete/삭제 거래 삭제
   import    CSV 가져오기        export    CSV 내보내기
   backup    백업                recurring 반복 규칙 관리
+  restore/복구 최근 삭제 복구
   help      도움말              exit      종료
 
 예: add → 질문에 답하기 → list → summary
 삭제 예: 삭제 TX-000002 또는 delete TX-000002
+복구 예: 복구 또는 복구 TX-000002
 자세한 안내: help add 또는 add --help
 옵션도 사용 가능: list --limit 3
 Ctrl+C: 현재 작업 취소 / 도움말: help 또는 도움말 / 종료: exit 또는 종료"""
@@ -37,8 +43,18 @@ DELETE_HELP = """거래 삭제 — list에 표시된 거래 번호를 입력하�
 
 delete 또는 삭제만 입력하면 거래 번호를 질문합니다.
 번호의 대소문자는 구분하지 않습니다. 예: tx-000002, Tx-000002
-delete는 마지막 e까지 입력하세요."""
+delete는 마지막 e까지 입력하세요. 삭제 후에는 복구로 되돌릴 수 있습니다."""
 
+RESTORE_HELP = """삭제한 거래 복구
+  복구                    마지막으로 삭제한 거래 복구
+  복구 TX-000002          해당 번호의 최근 삭제 기록 복구
+  restore TX-000002
+  restore --id TX-000002
+
+삭제 전의 번호와 내용을 그대로 복구합니다. 번호의 대소문자는 구분하지 않습니다.
+이미 사용 중인 거래 번호는 복구하지 않습니다. 삭제 이력이 있는 거래만 복구할 수 있습니다."""
+
+# 번호 메뉴의 표시 순서가 기본 선택과 연결되므로 첫 항목은 조회로 둔다.
 GROUPS = {
     "budget": (("list", "예산 조회"), ("set", "예산 설정")),
     "category": (("list", "분류 조회"), ("add", "분류 추가"), ("remove", "분류 삭제")),
@@ -52,6 +68,7 @@ class Prompts:
     """입력 종료를 기억하고, 간편 모드의 기본값과 선택 질문을 제공한다."""
 
     def __init__(self, input_fn: cli.InputFn) -> None:
+        """입력 경로를 저장하고, 필드 입력 중 EOF가 있었는지 추적한다."""
         self.input_fn = input_fn
         self.ended = False
 
@@ -72,6 +89,7 @@ class Prompts:
         current = date.today().strftime("%Y-%m")
 
         def parse(value: str) -> str:
+            """빈 답에는 이번 달을 채우고 실제 월 형식 검증은 모델에 맡긴다."""
             return parse_month(value.strip() or current)
 
         return cli.ask(self.read, f"대상 월 [엔터: {current}]: ", parse)
@@ -82,6 +100,7 @@ class Prompts:
             print(f"  {number}. {label} ({name})")
 
         def parse(value: str) -> str:
+            """선택 번호와 영문 이름을 같은 명령 값으로 바꾼다."""
             value = value.strip().lower() or choices[0][0]
             for number, (name, _) in enumerate(choices, start=1):
                 if value in (str(number), name):
@@ -124,6 +143,8 @@ def complete_command(words: list[str], prompts: Prompts) -> list[str]:
     """옵션 없는 짧은 명령에 필요한 값만 질문해 기존 명령으로 바꾼다."""
     if len(words) == 1 and words[0] in GROUPS:
         words = [words[0], prompts.choose(GROUPS[words[0]])]
+    # 직접 옵션을 적은 명령은 그대로 두고, 짧은 형태에만 질문을 보충한다.
+    # 질문의 답은 --옵션=값으로 묶어 '--help' 같은 메모도 데이터로 전달한다.
     match words:
         case ["search"]:
             return [*words, "--q=" + prompts.read("메모 검색어 [전체 조회는 엔터]: ")]
@@ -166,13 +187,15 @@ def execute(words: list[str], options: argparse.Namespace, prompts: Prompts) -> 
         return EXIT_OK
     if words[0].casefold() == "delet":
         raise ValidationError("삭제 명령은 delete 또는 삭제입니다.", hint="예: 삭제 TX-000002", exit_code=EXIT_USAGE)
-    if words[0].casefold() in ("delete", "삭제"):
-        words = ["delete", *words[1:]]
+    # 편의 표기만 기존 명령 형식으로 바꾼다. 최종 대상 검사는 서비스가 수행한다.
+    if words[0].casefold() in ("delete", "삭제", "restore", "복구"):
+        command = "delete" if words[0].casefold() in ("delete", "삭제") else "restore"
+        words = [command, *words[1:]]
         if "--help" in words:
-            print(DELETE_HELP)
+            print(DELETE_HELP if command == "delete" else RESTORE_HELP)
             return EXIT_OK
         if len(words) == 2 and not words[1].startswith("-"):
-            words = ["delete", f"--id={words[1]}"]
+            words = [command, f"--id={words[1]}"]
     if "--help" not in words:
         words = complete_command(words, prompts)
     parser = cli.build_parser()
@@ -183,7 +206,7 @@ def execute(words: list[str], options: argparse.Namespace, prompts: Prompts) -> 
     check = getattr(args, "check", None)
     if check is not None:
         check(args)
-    if args.command == "delete":
+    if args.command in ("delete", "restore") and args.tx_id is not None:
         args.tx_id = args.tx_id.strip().upper()
     cli.configure_logging(args.verbose)
     svc = build_services(Path(args.data_dir))
@@ -191,6 +214,7 @@ def execute(words: list[str], options: argparse.Namespace, prompts: Prompts) -> 
         print(f"[안내] 저장 폴더를 초기화했습니다: {args.data_dir}")
 
     def input_fn(prompt: str) -> str:
+        """기존 핸들러의 질문에 간편 입력의 기본값과 선택 목록을 연결한다."""
         return prompts.transaction_input(svc, prompt)
 
     return cli.dispatch(args, svc, input_fn)
@@ -211,6 +235,7 @@ def shell(options: argparse.Namespace, prompts: Prompts) -> int:
     while True:
         try:
             raw = prompts.input_fn("가계부> ")
+            # 따옴표로 감싼 공백은 묶되 Windows 경로의 역슬래시와 # 문자는 보존한다.
             lexer = shlex.shlex(raw, posix=True)
             lexer.whitespace_split = True
             lexer.commenters = ""
@@ -233,6 +258,7 @@ def shell(options: argparse.Namespace, prompts: Prompts) -> int:
             return EXIT_OK
         code = run_command(words, options, prompts)
         if prompts.ended:
+            # 필드 입력이 끊겼다면 다음 질문으로 넘어가지 않고 중단 코드로 끝낸다.
             return EXIT_INTERRUPT
         if code != EXIT_OK:
             print("[안내] 작업을 마치지 못했습니다. help로 사용법을 보거나 다음 명령을 입력하세요.")
@@ -246,6 +272,7 @@ def main(argv: list[str] | None = None, input_fn: cli.InputFn = input) -> int:
     parser.add_argument("--data-dir", default=cli.DEFAULT_DATA_DIR)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--help", action="store_true")
+    # 실행 시 설정은 한 번 읽고, 나머지는 기존 CLI가 이해할 명령으로 넘긴다.
     parser.add_argument("command", nargs=argparse.REMAINDER)
     options = parser.parse_args(argv)
     prompts = Prompts(input_fn)

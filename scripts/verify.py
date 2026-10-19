@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parent.parent
-CURRENT_PHASE = 9  # 구현이 끝난 마지막 Phase. Phase 를 완료할 때마다 올린다.
+CURRENT_PHASE = 10  # 과제 P9 이후 사용자 요청으로 추가한 삭제 복구까지 검증한다.
 
 SmokeFn = Callable[[Path], None]
 
@@ -40,6 +40,7 @@ def run_cli(data_dir: Path, *argv: str, input_text: str | None = None) -> subpro
 
 
 def expect(condition: bool, message: str, proc: subprocess.CompletedProcess[str] | None = None) -> None:
+    """실패한 조건에 실행 인자·종료 코드·출력을 붙여 재현 정보를 남긴다."""
     if condition:
         return
     detail = ""
@@ -52,6 +53,7 @@ def expect(condition: bool, message: str, proc: subprocess.CompletedProcess[str]
 
 
 def stdout_lines(proc: subprocess.CompletedProcess[str]) -> list[str]:
+    """출력의 빈 줄을 제외해 의미 있는 결과만 비교한다."""
     return [line for line in proc.stdout.splitlines() if line.strip()]
 
 
@@ -79,6 +81,7 @@ HELP_TARGETS: list[list[str]] = [
     ["category", "remove"],
     ["update"],
     ["delete"],
+    ["restore"],
     ["import"],
     ["export"],
     ["backup"],
@@ -102,6 +105,7 @@ USAGE_ERROR_TARGETS: list[list[str]] = [
 ]
 
 def smoke_phase1(data_dir: Path) -> None:
+    """도움말과 사용법 오류가 종료 코드를 지키고 저장 파일을 만들지 않는지 확인한다."""
     for target in HELP_TARGETS:
         proc = run_cli(data_dir, *target, "--help")
         expect(proc.returncode == 0, "--help 는 종료 0 이어야 합니다", proc)
@@ -135,6 +139,7 @@ INIT_NOTICE = "[안내] 저장 폴더를 초기화했습니다: "
 
 def smoke_phase3(data_dir: Path) -> None:
     # 첫 명령: 폴더 초기화 안내 1회 + 거래 없음 안내
+    """첫 초기화부터 카테고리·거래 등록·재입력·목록 조회까지 실제 명령으로 확인한다."""
     proc = run_cli(data_dir, "list")
     expect(proc.returncode == 0, "빈 폴더의 list 는 종료 0", proc)
     expect(stdout_lines(proc) == [INIT_NOTICE + str(data_dir), "[안내] 거래가 없습니다"], "첫 실행은 초기화 안내 + 거래 없음", proc)
@@ -194,11 +199,13 @@ def smoke_phase3(data_dir: Path) -> None:
 
 
 def add_tx(data_dir: Path, date: str, type_: str, category: str, amount: str, memo: str = "", tags: str = "") -> None:
+    """대화형 거래 입력을 실제 프로세스에 전달해 스모크 자료를 등록한다."""
     proc = run_cli(data_dir, "add", input_text=f"{date}\n{type_}\n{category}\n{amount}\n{memo}\n{tags}\n")
     expect(proc.returncode == 0 and "[저장 완료] id=" in proc.stdout, "스모크 데이터 add", proc)
 
 
 def smoke_phase4(data_dir: Path) -> None:
+    """예산과 월별 요약·초과 경고·조건 검색을 실제 명령으로 확인한다."""
     run_cli(data_dir, "list")  # 초기화 안내 소비
     add_tx(data_dir, "2024-01-14", "income", "salary", "3000000", "월급")
     add_tx(data_dir, "2024-01-15", "expense", "food", "15000", "점심", "meal")
@@ -240,6 +247,7 @@ def smoke_phase4(data_dir: Path) -> None:
 
     # search: 조건별 건수와 최신순
     def search_ids(*argv: str) -> list[str]:
+        """실제 검색 명령의 결과 번호를 뽑아 조건별 결과와 정렬을 비교한다."""
         proc = run_cli(data_dir, "search", *argv)
         expect(proc.returncode == 0, "search 종료 0", proc)
         return [cells(line)[0] for line in stdout_lines(proc) if not line.startswith("[안내]")]
@@ -269,6 +277,7 @@ def smoke_phase4(data_dir: Path) -> None:
 
 
 def expect_two_line_error(proc: subprocess.CompletedProcess[str], first_line: str, label: str) -> None:
+    """실패 종료와 오류·해결 힌트 두 줄이 지켜지는지 확인한다."""
     lines = proc.stderr.strip().splitlines()
     expect(proc.returncode == 1 and proc.stdout == "", f"{label}: 종료 1, stdout 비어 있음", proc)
     expect(len(lines) == 2 and lines[0] == first_line and lines[1].startswith("[힌트] "), f"{label}: [오류]/[힌트] 두 줄", proc)
@@ -276,12 +285,14 @@ def expect_two_line_error(proc: subprocess.CompletedProcess[str], first_line: st
 
 
 def list_rows(data_dir: Path) -> list[list[str]]:
+    """실제 목록 명령의 거래 행을 분리해 후속 스모크에서 비교한다."""
     proc = run_cli(data_dir, "list")
     expect(proc.returncode == 0, "list 종료 0", proc)
     return [cells(line) for line in stdout_lines(proc) if not line.startswith("[안내]")]
 
 
 def smoke_phase5(data_dir: Path) -> None:
+    """수정·삭제·카테고리 재배정의 성공과 실패 시 거래 보존을 확인한다."""
     run_cli(data_dir, "list")  # 초기화 안내 소비
     add_tx(data_dir, "2024-01-15", "expense", "food", "15000", "점심", "meal")
     add_tx(data_dir, "2024-01-14", "income", "salary", "3000000", "월급")
@@ -339,6 +350,7 @@ CSV_HEADER = "date,type,category,amount,memo,tags"
 
 
 def smoke_phase6(data_dir: Path) -> None:
+    """CSV 가져오기·내보내기·재가져오기와 잘못된 사용법을 확인한다."""
     first = data_dir / "first"
     proc = run_cli(first, "import", "--from", str(SAMPLE_CSV))
     expect(proc.returncode == 0, "import 샘플 종료 0", proc)
@@ -372,11 +384,12 @@ def smoke_phase6(data_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 7 — 테이블 정렬(구분자 위치 일치, 금액 우정렬) + backup(폴더에 3개 파일, 재실행은 다른 폴더)
+# Phase 7 — 테이블 정렬(구분자 위치 일치, 금액 우정렬) + backup(폴더에 4개 파일, 재실행은 다른 폴더)
 # ---------------------------------------------------------------------------
 
 
 def smoke_phase7(data_dir: Path) -> None:
+    """표 정렬과 네 파일 백업 및 같은 시각의 백업 충돌 회피를 확인한다."""
     run_cli(data_dir, "list")  # 초기화 안내 소비
     add_tx(data_dir, "2024-01-15", "expense", "food", "15000", "점심", "meal")
     add_tx(data_dir, "2024-01-14", "income", "salary", "3000000", "월급")
@@ -419,6 +432,7 @@ def smoke_phase7(data_dir: Path) -> None:
 
 
 def smoke_phase9(data_dir: Path) -> None:
+    """반복 규칙의 생성·적용·말일 보정·중복 방지·삭제를 확인한다."""
     run_cli(data_dir, "list")  # 초기화 안내 소비
     expect(data_dir.joinpath("recurring.jsonl").is_file(), "초기화가 recurring.jsonl 도 만든다 (D44)")
     proc = run_cli(data_dir, "recurring", "list")
@@ -478,6 +492,44 @@ def smoke_phase9(data_dir: Path) -> None:
         expect(proc.returncode == 0 and "usage" in proc.stdout.lower(), "recurring --help", proc)
 
 
+# ---------------------------------------------------------------------------
+# 추가 기능 10 — 삭제 → 다른 프로세스에서 최근/번호별 복구 → 중복 차단 → 간편 모드 확인
+# ---------------------------------------------------------------------------
+
+
+def smoke_restore(data_dir: Path) -> None:
+    """다섯 거래 중 삭제한 거래만 복구하고 간편 명령과 재실행의 지속성을 확인한다."""
+    proc = run_cli(data_dir, "import", "--from", str(SAMPLE_CSV))
+    expect(proc.returncode == 0 and "imported=5" in proc.stdout, "복구 스모크 자료 5건", proc)
+    before = list_rows(data_dir)
+
+    # 각 호출은 다른 Python 프로세스다. 삭제 이력이 디스크에 남아야 복구할 수 있다.
+    proc = run_cli(data_dir, "delete", "--id", "TX-000002")
+    expect(proc.returncode == 0 and len(list_rows(data_dir)) == 4, "대상 거래 삭제", proc)
+    proc = run_cli(data_dir, "restore")
+    expect(proc.returncode == 0 and "[복구 완료] id=TX-000002" in proc.stdout, "최근 삭제 복구", proc)
+    expect(list_rows(data_dir) == before, "복구 뒤 전체 목록과 원래 필드 일치")
+    proc = run_cli(data_dir, "restore")
+    expect(proc.returncode == 1 and "[오류]" in proc.stderr and "Traceback" not in proc.stderr, "중복 복구는 사용자 오류", proc)
+    expect(list_rows(data_dir) == before, "중복 복구 실패 뒤 거래 보존")
+
+    # 마지막 삭제와 다른 번호를 지정하면 그 번호의 이력을 골라 복구한다.
+    for tx_id in ("TX-000002", "TX-000004"):
+        proc = run_cli(data_dir, "delete", "--id", tx_id)
+        expect(proc.returncode == 0, "번호별 복구 준비 삭제", proc)
+    proc = run_cli(data_dir, "restore", "--id", "TX-000002")
+    expect(proc.returncode == 0 and "[복구 완료] id=TX-000002" in proc.stdout, "번호 지정 복구", proc)
+
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "budget.py"), "--data-dir", str(data_dir)],
+        input="복구 tx-000004\nlist\nexit\n", cwd=ROOT,
+        capture_output=True, text=True, encoding="utf-8", timeout=15,
+    )
+    expect(proc.returncode == 0 and proc.stderr == "", "간편 모드 복구와 다음 명령 실행", proc)
+    expect("[복구 완료] id=TX-000004" in proc.stdout, "한글 복구와 소문자 번호 지원", proc)
+    expect(list_rows(data_dir) == before, "다른 거래를 유지하며 원래 다섯 건 복구")
+
+
 SMOKES: dict[int, SmokeFn] = {
     1: smoke_phase1,
     3: smoke_phase3,
@@ -486,6 +538,7 @@ SMOKES: dict[int, SmokeFn] = {
     6: smoke_phase6,
     7: smoke_phase7,
     9: smoke_phase9,
+    10: smoke_restore,
 }
 
 
@@ -495,12 +548,14 @@ SMOKES: dict[int, SmokeFn] = {
 
 
 def run_unittests() -> tuple[bool, int]:
+    """기존 네 테스트 파일을 자동 발견해 실행하고 통과 여부와 개수를 돌려준다."""
     suite = unittest.defaultTestLoader.discover(str(ROOT / "tests"), top_level_dir=str(ROOT))
     result = unittest.TextTestRunner(verbosity=1).run(suite)
     return result.wasSuccessful(), result.testsRun
 
 
 def run_smokes(up_to_phase: int) -> list[int]:
+    """각 시나리오를 별도 임시 폴더에서 순서대로 실행하고 성공 번호를 모은다."""
     passed: list[int] = []
     for phase in sorted(SMOKES):
         if phase > up_to_phase:
@@ -525,6 +580,7 @@ def configure_console() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """단위 테스트와 스모크를 하나의 게이트로 묶어 최종 종료 코드를 정한다."""
     configure_console()
     parser = argparse.ArgumentParser(description="budget_app 검증 게이트 (unittest + CLI 스모크)")
     parser.add_argument("--phase", type=int, default=CURRENT_PHASE, metavar="N", help=f"이 Phase 까지의 스모크만 실행 (기본값: {CURRENT_PHASE})")

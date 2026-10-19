@@ -24,6 +24,7 @@ class FieldValidationScenarios(unittest.TestCase):
     """D08~D12 검증 규칙: 허용 값은 정규화되어 돌아오고, 거부 값은 ValidationError 다."""
 
     def assert_rejected(self, func: Callable[[Any], object], values: list[Any]) -> None:
+        """잘못된 값들이 사용자용 검증 오류와 실패 종료 코드로 변환되는지 확인한다."""
         for value in values:
             with self.subTest(value=value):
                 with self.assertRaises(ValidationError) as ctx:
@@ -33,6 +34,7 @@ class FieldValidationScenarios(unittest.TestCase):
                 self.assertTrue(ctx.exception.format_lines()[0].startswith("[오류] "))
 
     def test_date_scenarios(self) -> None:
+        """윤년을 포함한 날짜 정규화와 잘못된 날짜 형식 거부를 확인한다."""
         self.assertEqual(parse_date("2024-01-15"), "2024-01-15")
         self.assertEqual(parse_date("  2024-02-29 "), "2024-02-29")  # 윤년 + 공백 제거
         self.assert_rejected(
@@ -40,21 +42,25 @@ class FieldValidationScenarios(unittest.TestCase):
         )
 
     def test_month_scenarios(self) -> None:
+        """연월 형식과 실제로 존재하는 월만 허용하는지 확인한다."""
         self.assertEqual(parse_month("2024-01"), "2024-01")
         self.assert_rejected(parse_month, ["2024-13", "2024-1", "2024-01-15", "202401", ""])
 
     def test_amount_scenarios(self) -> None:
+        """양의 정수만 허용하고 쉼표·소수·불리언 등의 입력을 거부한다."""
         self.assertEqual(parse_amount("15000"), 15000)
         self.assertEqual(parse_amount(" 3000000 "), 3000000)
         self.assertEqual(parse_amount(42), 42)
         self.assert_rejected(parse_amount, ["0", "-500", "15000.5", "1,000", "+5", "abc", "", 0, -1, True])
 
     def test_type_scenarios(self) -> None:
+        """수입·지출 입력의 공백과 대소문자를 정리하고 다른 종류는 거부한다."""
         self.assertEqual(parse_type("expense"), "expense")
         self.assertEqual(parse_type(" Income "), "income")  # strip + lower
         self.assert_rejected(parse_type, ["transfer", "", "in come"])
 
     def test_tags_scenarios(self) -> None:
+        """태그의 공백·빈 값·중복을 제거하되 첫 등장 순서를 보존한다."""
         self.assertEqual(parse_tags("meal, daily ,meal,, "), ["meal", "daily"])  # strip·빈 값·중복 제거, 순서 유지
         self.assertEqual(parse_tags(""), [])
         self.assertEqual(parse_tags(None), [])
@@ -62,11 +68,13 @@ class FieldValidationScenarios(unittest.TestCase):
         self.assert_rejected(parse_tags, [["a", 1], 123])
 
     def test_category_name_scenarios(self) -> None:
+        """카테고리의 앞뒤 공백만 정리하고 빈 이름을 거부한다."""
         self.assertEqual(parse_category_name(" food "), "food")
         self.assertEqual(parse_category_name("Food"), "Food")  # 대소문자 구분 (소문자로 바꾸지 않음)
         self.assert_rejected(parse_category_name, ["", "   "])
 
     def test_transaction_id_scenarios(self) -> None:
+        """거래 번호의 최소 여섯 자리 형식과 큰 번호의 확장을 확인한다."""
         self.assertEqual(format_transaction_id(12), "TX-000012")
         self.assertEqual(format_transaction_id(1234567), "TX-1234567")  # 999999 초과 시 자연 확장
         self.assertEqual(transaction_number("TX-000012"), 12)
@@ -80,6 +88,7 @@ class SerializationScenarios(unittest.TestCase):
     """to_dict / from_dict 왕복과 손상 레코드 거부 (AGENT.md 6장)."""
 
     def test_transaction_roundtrip_and_defaults(self) -> None:
+        """거래를 사전으로 바꾸고 다시 읽을 때 필드와 선택 항목 기본값을 보존한다."""
         tx = Transaction(
             id="TX-000012", type="expense", date="2024-01-15", amount=15000,
             category="food", memo="점심", tags=["meal"],
@@ -104,6 +113,7 @@ class SerializationScenarios(unittest.TestCase):
         self.assertEqual(minimal.tags, [])
 
     def test_transaction_from_dict_rejects_broken_records(self) -> None:
+        """저장된 거래의 필수 필드·타입·값이 손상되면 모델 단계에서 거부한다."""
         base = {"id": "TX-000001", "type": "expense", "date": "2024-01-15", "amount": 100, "category": "food"}
         broken: list[Any] = [
             {**base, "amount": "100"},          # 타입 불일치 (문자열)
@@ -125,6 +135,7 @@ class SerializationScenarios(unittest.TestCase):
         self.assertEqual(Transaction.from_dict({**base, "tags": "meal, daily"}).tags, ["meal", "daily"])
 
     def test_category_and_budget_roundtrip(self) -> None:
+        """카테고리와 예산의 직렬화 왕복 및 손상 레코드 거부를 확인한다."""
         category = Category(name="food")
         self.assertEqual(Category.from_dict(category.to_dict()), category)
         with self.assertRaises(ValidationError):

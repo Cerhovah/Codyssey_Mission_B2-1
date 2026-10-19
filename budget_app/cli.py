@@ -22,11 +22,13 @@ from .formatting import (
 )
 from .services import DATA_FILE_COUNT, Services, build_services
 
+# 명령 이름과 기본값을 모아 두어 도움말과 실제 실행 기준을 일치시킨다.
 PROG = "python -m budget_app"
 DEFAULT_DATA_DIR = "./data"
 DEFAULT_LIST_LIMIT = 20
 DEFAULT_SUMMARY_TOP = 5
 
+# 입력 함수를 전달받으면 실제 키보드 없이도 동일한 질문 흐름을 검증할 수 있다.
 InputFn = Callable[[str], str]
 Handler = Callable[[argparse.Namespace, Services, InputFn], int]
 T = TypeVar("T")
@@ -47,6 +49,7 @@ def configure_console() -> None:
         try:
             reconfigure(encoding="utf-8")
         except (ValueError, OSError):
+            # 파일·테스트 버퍼처럼 인코딩을 바꿀 수 없는 스트림도 계속 사용한다.
             pass
 
 
@@ -92,6 +95,7 @@ def _add_help(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
 
 
 def _subparser(commands: argparse._SubParsersAction, name: str, help_text: str) -> argparse.ArgumentParser:  # type: ignore[type-arg]
+    """모든 하위 명령에 같은 방식의 긴 도움말 옵션을 붙인다."""
     return _add_help(commands.add_parser(name, help=help_text, add_help=False))
 
 
@@ -113,6 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--verbose", action="store_true", help="DEBUG 로그(호출·실행 시간)를 stderr 로 출력")
 
+    # 최상위 명령을 먼저 고르고, 선택한 명령에 속한 옵션만 해석한다.
     commands = parser.add_subparsers(dest="command", metavar="<command>", title="명령", required=True)
 
     _subparser(commands, "add", "거래 추가 (대화형: 날짜, 타입, 카테고리, 금액, 메모, 태그)")
@@ -123,6 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"출력 건수 (기본값: {DEFAULT_LIST_LIMIT})",
     )
 
+    # 검색 조건은 모두 선택이며, 여러 개를 주면 서비스에서 AND로 결합한다.
     search_parser = _subparser(commands, "search", "조건 검색 (모든 조건은 AND, 최신순)")
     search_parser.add_argument("--from", dest="date_from", metavar="YYYY-MM-DD", help="시작일 (포함)")
     search_parser.add_argument("--to", dest="date_to", metavar="YYYY-MM-DD", help="종료일 (포함)")
@@ -139,6 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"카테고리별 지출 상위 건수 (기본값: {DEFAULT_SUMMARY_TOP})",
     )
 
+    # 예산·카테고리·반복 규칙은 관리할 대상과 그 대상의 작업을 두 단계로 고른다.
     budget_parser = _subparser(commands, "budget", "월 예산 설정/조회")
     budget_commands = budget_parser.add_subparsers(dest="budget_command", metavar="<subcommand>", required=True)
     budget_set = _subparser(budget_commands, "set", "월 예산 저장 (같은 달은 덮어쓰기)")
@@ -167,10 +174,14 @@ def build_parser() -> argparse.ArgumentParser:
     update_parser.add_argument("--amount", metavar="AMOUNT", help="양의 정수")
     update_parser.add_argument("--memo", metavar="TEXT", help="메모")
     update_parser.add_argument("--tags", metavar="A,B", help='쉼표 구분 태그. "" 로 비울 수 있다')
+    # argparse가 개별 옵션을 읽은 뒤 명령 전체의 필수 조합도 검사하도록 연결한다.
     update_parser.set_defaults(check=functools.partial(_check_update, update_parser))
 
     delete_parser = _subparser(commands, "delete", "거래 삭제")
     delete_parser.add_argument("--id", dest="tx_id", required=True, metavar="ID", help="삭제할 거래 id")
+
+    restore_parser = _subparser(commands, "restore", "삭제한 거래 복구 (번호 생략 시 최근 삭제)")
+    restore_parser.add_argument("--id", dest="tx_id", metavar="ID", help="복구할 거래 id. 생략하면 마지막 삭제 기록")
 
     import_parser = _subparser(commands, "import", "CSV 에서 거래 일괄 등록")
     import_parser.add_argument("--from", dest="source", required=True, metavar="CSV", help="가져올 CSV 파일 경로")
@@ -222,12 +233,14 @@ def cmd_add(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
     amount = ask(input_fn, "금액(양수 정수): ", parse_amount)
     memo = ask(input_fn, "메모(선택): ", parse_memo)
     tags = ask(input_fn, "태그(쉼표로 구분, 없으면 엔터): ", parse_tags)
+    # 모든 질문이 끝난 뒤 저장하므로 입력 중 중단한 거래는 남지 않는다.
     tx = svc.transactions.add(date=date, type_=type_, category=category, amount=amount, memo=memo, tags=tags)
     print(f"[저장 완료] id={tx.id}")
     return EXIT_OK
 
 
 def cmd_list(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """서비스가 고른 최근 거래를 열 너비에 맞춘 표로 보여준다."""
     rows = svc.transactions.list_recent(args.limit)
     if not rows:
         print("[안내] 거래가 없습니다")
@@ -238,6 +251,7 @@ def cmd_list(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
 
 
 def cmd_search(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """입력된 검색 조건을 서비스에 전달하고 일치하는 거래만 출력한다."""
     rows = svc.transactions.search(
         date_from=args.date_from,
         date_to=args.date_to,
@@ -256,6 +270,7 @@ def cmd_search(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> in
 
 
 def cmd_summary(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """월별 집계 결과를 수입·지출·잔액·예산 사용률·지출 순위로 표시한다."""
     result = svc.budgets.summary(args.month, args.top)
     if result.count == 0:
         print(f"[안내] {result.month} 데이터 없음")
@@ -266,6 +281,7 @@ def cmd_summary(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> i
     print(f"총 지출: {format_won(result.expense)}")
     print(f"잔액: {format_won(result.balance)}")
     if result.budget is not None:
+        # 집계는 서비스가 맡고, 백분율과 경고 문구는 화면 계층에서 만든다.
         usage = result.expense / result.budget.amount * 100
         print(f"예산: {format_won(result.budget.amount)} (사용률 {usage:.1f}%)")
         if result.expense > result.budget.amount:
@@ -278,12 +294,14 @@ def cmd_summary(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> i
 
 
 def cmd_budget_set(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """월과 금액으로 예산을 저장하고 반영된 값을 안내한다."""
     budget = svc.budgets.set_budget(args.month, args.amount)
     print(f"[저장 완료] {budget.month} 예산 {format_won(budget.amount)}")
     return EXIT_OK
 
 
 def cmd_budget_list(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """월 순서로 정리된 예산을 출력하고 빈 목록도 정상 결과로 처리한다."""
     budgets = svc.budgets.list_all()
     if not budgets:
         print("[안내] 설정된 예산이 없습니다")
@@ -294,6 +312,7 @@ def cmd_budget_list(args: argparse.Namespace, svc: Services, input_fn: InputFn) 
 
 
 def cmd_category_add(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """이름을 옵션으로 받지 않았을 때만 질문한 뒤 카테고리를 등록한다."""
     name = args.name if args.name is not None else input_fn("카테고리명: ")
     created = svc.categories.add(name)
     print(f"[저장 완료] category={created}")
@@ -301,12 +320,14 @@ def cmd_category_add(args: argparse.Namespace, svc: Services, input_fn: InputFn)
 
 
 def cmd_category_list(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """현재 등록된 카테고리 이름을 한 줄씩 출력한다."""
     for name in svc.categories.list_names():
         print(format_category_row(name))
     return EXIT_OK
 
 
 def cmd_category_remove(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """분류를 삭제하고 거래를 대체 분류로 옮겼다면 이동 건수도 알린다."""
     moved = svc.categories.remove(args.name, replace=args.replace)
     if moved:
         print(f"[완료] 거래 {moved}건을 '{args.replace}'로 이동하고 category={args.name} 를 삭제했습니다.")
@@ -316,6 +337,7 @@ def cmd_category_remove(args: argparse.Namespace, svc: Services, input_fn: Input
 
 
 def cmd_update(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """지정한 수정 옵션을 전달한다. None인 필드는 기존 값이 유지된다."""
     tx = svc.transactions.update(
         args.tx_id,
         date=args.date,
@@ -330,12 +352,21 @@ def cmd_update(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> in
 
 
 def cmd_delete(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """원본 보관과 삭제가 모두 끝난 뒤 삭제된 거래 번호를 알린다."""
     tx = svc.transactions.delete(args.tx_id)
     print(f"[삭제 완료] id={tx.id}")
     return EXIT_OK
 
 
+def cmd_restore(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """지정 번호 또는 가장 최근의 삭제 거래를 복구하고 원래 번호를 표시한다."""
+    tx = svc.transactions.restore(args.tx_id)
+    print(f"[복구 완료] id={tx.id}")
+    return EXIT_OK
+
+
 def cmd_import(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """CSV 처리 결과를 성공·건너뜀 건수와 행별 실패 사유로 나눠 보여준다."""
     result = svc.transactions.import_csv(Path(args.source))
     print(f"[완료] imported={result.imported}, skipped={len(result.skipped)}")
     for line_no, reason in result.skipped:
@@ -344,6 +375,7 @@ def cmd_import(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> in
 
 
 def cmd_export(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """선택 기간의 거래를 CSV로 저장하고 출력 경로와 건수를 알린다."""
     count = svc.transactions.export_csv(
         Path(args.out), month=args.month, date_from=args.date_from, date_to=args.date_to
     )
@@ -352,6 +384,7 @@ def cmd_export(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> in
 
 
 def cmd_backup(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """서비스가 만든 백업 폴더와 활성 저장 파일의 복사 개수를 안내한다."""
     target = svc.backup()
     print(f"[완료] {target} ({DATA_FILE_COUNT} files)")
     return EXIT_OK
@@ -371,6 +404,7 @@ def cmd_recurring_add(args: argparse.Namespace, svc: Services, input_fn: InputFn
 
 
 def cmd_recurring_list(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """반복 규칙을 표로 보여주며, 아직 없으면 등록된 규칙이 없다고 안내한다."""
     rules = svc.recurring.list_all()
     if not rules:
         print("[안내] 등록된 반복 내역이 없습니다")
@@ -381,12 +415,14 @@ def cmd_recurring_list(args: argparse.Namespace, svc: Services, input_fn: InputF
 
 
 def cmd_recurring_remove(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """반복 규칙만 삭제한다. 이미 생성된 실제 거래에는 영향을 주지 않는다."""
     rule = svc.recurring.remove(args.rule_id)
     print(f"[삭제 완료] id={rule.id}")
     return EXIT_OK
 
 
 def cmd_recurring_apply(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """월별 규칙 적용 결과와 중복 적용 등으로 건너뛴 이유를 출력한다."""
     result = svc.recurring.apply(args.month)
     if result.rule_count == 0:
         print("[안내] 등록된 반복 내역이 없습니다")
@@ -397,6 +433,7 @@ def cmd_recurring_apply(args: argparse.Namespace, svc: Services, input_fn: Input
     return EXIT_OK
 
 
+# 모든 명령이 같은 호출 계약을 사용하므로 문자열 키로 실행 함수를 선택할 수 있다.
 HANDLERS: dict[str, Handler] = {
     "add": cmd_add,
     "list": cmd_list,
@@ -409,6 +446,7 @@ HANDLERS: dict[str, Handler] = {
     "category remove": cmd_category_remove,
     "update": cmd_update,
     "delete": cmd_delete,
+    "restore": cmd_restore,
     "import": cmd_import,
     "export": cmd_export,
     "backup": cmd_backup,
@@ -431,6 +469,7 @@ def handler_key(args: argparse.Namespace) -> str:
 
 
 def dispatch(args: argparse.Namespace, svc: Services, input_fn: InputFn) -> int:
+    """파싱된 명령을 담당 핸들러에 연결하고 그 종료 코드를 그대로 돌려준다."""
     return HANDLERS[handler_key(args)](args, svc, input_fn)
 
 
@@ -438,6 +477,7 @@ def main(argv: list[str] | None = None, input_fn: InputFn = input) -> int:
     """인자 해석 → 로깅 설정 → 서비스 조립 → 명령 실행. 오류 변환은 __main__.entry 의 handle_errors 가 맡는다."""
     configure_console()
     parser = build_parser()
+    # 도움말과 사용법 오류는 여기서 끝나므로 불필요한 저장 폴더를 만들지 않는다.
     args = parser.parse_args(argv)
     check = getattr(args, "check", None)
     if check is not None:

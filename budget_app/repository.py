@@ -28,10 +28,13 @@ from .models import (
     transaction_number,
 )
 
+# 초기화와 전체 백업은 현재 사용 중인 네 파일만 대상으로 삼는다.
 TRANSACTIONS_FILE = "transactions.jsonl"
 CATEGORIES_FILE = "categories.jsonl"
 BUDGETS_FILE = "budgets.jsonl"
 RECURRING_FILE = "recurring.jsonl"  # D44
+# 삭제 이력은 활성 데이터가 아니라 복구용 보관 기록이므로 DATA_FILES에 넣지 않는다 (D47).
+DELETED_FILE = "deleted.jsonl"
 DATA_FILES: tuple[str, ...] = (TRANSACTIONS_FILE, CATEGORIES_FILE, BUDGETS_FILE, RECURRING_FILE)
 DEFAULT_CATEGORIES: tuple[str, ...] = ("food", "transport", "rent", "salary", "etc")  # D04
 
@@ -59,6 +62,7 @@ class JsonlStore:
     """JSONL 파일 1개를 다룬다. 읽기는 제너레이터, 재작성은 임시 파일 + os.replace."""
 
     def __init__(self, path: Path) -> None:
+        """경로만 보관한다. 도움말이나 객체 생성만으로 파일을 만들지 않는다."""
         self.path = path
 
     # -- 읽기 ---------------------------------------------------------------
@@ -82,6 +86,7 @@ class JsonlStore:
                     except ValueError:
                         raise _corrupted(self.path, line_no) from None
                     if not isinstance(record, dict):
+                        # JSON 문법이 맞아도 배열·숫자는 레코드 계약에 맞지 않는다.
                         raise _corrupted(self.path, line_no)
                     yield line_no, record
             except (OSError, UnicodeDecodeError) as exc:
@@ -108,10 +113,11 @@ class JsonlStore:
 
     @staticmethod
     def _dump(record: dict[str, Any]) -> str:
+        """한글을 읽을 수 있는 JSON 한 건에 줄바꿈을 붙여 JSONL 경계를 유지한다."""
         return json.dumps(record, ensure_ascii=False) + "\n"
 
     def append(self, record: dict[str, Any]) -> None:
-        """파일 끝에 1줄을 더한다. 파일이 없으면 새로 만든다 (D01, D34)."""
+        """파일 끝에 한 줄을 더한다. 파일이 없으면 새로 만든다 (D01, D34)."""
         try:
             with open(self.path, "a", encoding=ENCODING, newline="\n") as handle:
                 handle.write(self._dump(record))
@@ -125,6 +131,7 @@ class JsonlStore:
         """
         directory = self.path.parent
         try:
+            # 같은 파일 시스템에 임시 파일을 두어 마지막 교체를 원자적으로 수행한다.
             tmp = tempfile.NamedTemporaryFile(
                 mode="w",
                 encoding=ENCODING,
@@ -141,10 +148,12 @@ class JsonlStore:
             with tmp:
                 for record in records:
                     tmp.write(self._dump(record))
+                # 교체 전에 Python 버퍼와 운영체제 버퍼의 쓰기를 완료한다.
                 tmp.flush()
                 os.fsync(tmp.fileno())
             os.replace(tmp_path, self.path)
         except BaseException as exc:
+            # 입력 제너레이터의 실패와 사용자 중단에서도 임시 파일만 제거한다.
             self._discard(tmp_path)
             if isinstance(exc, AppError):
                 raise
@@ -165,10 +174,13 @@ class TransactionRepository:
     """거래 저장소. id 형식까지 검증한 Transaction 만 흘려 보낸다 (D05, D33)."""
 
     def __init__(self, store: JsonlStore) -> None:
+        """파일 I/O 구현을 주입받아 거래 모델의 직렬화만 담당한다."""
         self.store = store
+        self.deleted_store = JsonlStore(store.path.parent / "backups" / DELETED_FILE)
 
     @staticmethod
     def _from_record(record: dict[str, Any]) -> Transaction:
+        """필드와 번호를 함께 검사해 잘못된 저장 줄이 서비스로 넘어가지 않게 한다."""
         tx = Transaction.from_dict(record)
         transaction_number(tx.id)  # `TX-000012` 형식이 아니면 ValidationError → 손상 줄 (D33)
         return tx
@@ -187,7 +199,30 @@ class TransactionRepository:
         return f"TX-{highest + 1:06d}"
 
     def append(self, tx: Transaction) -> None:
+        """검증된 거래를 JSON 객체로 바꾸어 기존 파일 끝에 추가한다."""
         self.store.append(tx.to_dict())
+
+    def archive(self, tx: Transaction) -> None:
+        """기존 이력을 보존하며 원본 한 건을 원자적으로 더한다. 보관 실패 시 삭제하지 않는다 (D47)."""
+        try:
+            # 삭제 기능을 처음 사용할 때만 복구 이력을 둘 폴더를 준비한다.
+            self.deleted_store.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise _storage_error(self.deleted_store.path, exc) from None
+
+        def archived() -> Iterator[dict[str, Any]]:
+            """기존 기록을 검증하며 순서대로 넘긴 뒤 삭제 직전 원본을 마지막에 더한다."""
+            for deleted in self.iter_deleted():
+                yield deleted.to_dict()
+            yield tx.to_dict()
+
+        # 직접 append하면 쓰기 실패로 이력 끝이 잘릴 수 있다. 재작성은 기존 이력을
+        # 모두 검증하고 각 줄의 LF 경계와 flush·fsync를 완료한 뒤 한 번에 교체한다.
+        self.deleted_store.rewrite(archived())
+
+    def iter_deleted(self) -> Iterator[Transaction]:
+        """보관된 원본을 삭제 순서대로 전달한다. 이력이 없으면 아무것도 생성하지 않는다 (D47)."""
+        yield from self.deleted_store.iter_parsed(self._from_record)
 
     def rewrite(self, transactions: Iterable[Transaction]) -> None:
         """전체를 다시 쓴다 (update/delete/재배정용, D21). 입력도 제너레이터 그대로 흘려 보낸다."""
@@ -198,9 +233,11 @@ class CategoryStore:
     """카테고리 저장소. 이름의 유일성을 지킨다 (D12, D35)."""
 
     def __init__(self, store: JsonlStore) -> None:
+        """카테고리를 읽고 쓸 JSONL 저장소를 연결한다."""
         self.store = store
 
     def _iter_names(self) -> Iterator[str]:
+        """모델 검증을 거친 이름을 한 건씩 전달해 존재 검사의 조기 종료를 허용한다."""
         for category in self.store.iter_parsed(Category.from_dict):
             yield category.name
 
@@ -209,6 +246,7 @@ class CategoryStore:
         return list(self._iter_names())
 
     def exists(self, name: str) -> bool:
+        """일치하는 이름을 찾는 즉시 멈추며 전체 목록을 메모리에 올리지 않는다."""
         return any(existing == name for existing in self._iter_names())
 
     def add(self, name: str) -> None:
@@ -237,9 +275,11 @@ class BudgetStore:
     """월 예산 저장소. 한 달에 레코드 1건을 유지한다 (D25, D35)."""
 
     def __init__(self, store: JsonlStore) -> None:
+        """월별 예산을 저장할 JSONL 저장소를 연결한다."""
         self.store = store
 
     def get(self, month: str) -> Budget | None:
+        """지정한 월의 예산을 찾아 돌려주고 설정되지 않았으면 None을 돌려준다."""
         for budget in self.iter_all():
             if budget.month == month:
                 return budget
@@ -252,6 +292,7 @@ class BudgetStore:
             return
 
         def replaced() -> Iterator[dict[str, Any]]:
+            """다른 월의 위치와 값을 유지하며 대상 월만 새 예산으로 바꾼다."""
             for existing in self.iter_all():
                 yield (budget if existing.month == budget.month else existing).to_dict()
 
@@ -266,15 +307,18 @@ class RecurringStore:
     """반복 내역 규칙 저장소 (D44). TransactionRepository 와 같은 패턴이며 id 는 `RC-` 접두사."""
 
     def __init__(self, store: JsonlStore) -> None:
+        """반복 규칙 파일의 읽기·쓰기를 맡을 저장소를 연결한다."""
         self.store = store
 
     @staticmethod
     def _from_record(record: dict[str, Any]) -> RecurringRule:
+        """반복 규칙의 필드와 RC 번호를 검증해 손상 줄을 일관되게 처리한다."""
         rule = RecurringRule.from_dict(record)
         recurring_number(rule.id)  # `RC-000001` 형식이 아니면 ValidationError → 손상 줄 (D33)
         return rule
 
     def iter_all(self) -> Iterator[RecurringRule]:
+        """파일에 저장된 순서대로 검증된 규칙을 한 건씩 전달한다."""
         yield from self.store.iter_parsed(self._from_record)
 
     def next_id(self) -> str:
@@ -287,6 +331,7 @@ class RecurringStore:
         return format_recurring_id(highest + 1)
 
     def append(self, rule: RecurringRule) -> None:
+        """완성된 규칙을 한 줄로 저장하며 기존 규칙은 다시 쓰지 않는다."""
         self.store.append(rule.to_dict())
 
     def remove(self, rule_id: str) -> RecurringRule:
@@ -300,6 +345,7 @@ class RecurringStore:
             raise NotFoundError(
                 f"반복 내역을 찾을 수 없습니다: {rule_id}", hint="python -m budget_app recurring list 로 id를 확인하세요."
             )
+        # 대상이 없을 때는 재작성하지 않으므로 실패한 삭제가 파일을 바꾸지 않는다.
         self.store.rewrite(rule.to_dict() for rule in self.iter_all() if rule.id != rule_id)
         return target
 
@@ -307,6 +353,7 @@ class RecurringStore:
 def backup_files(data_dir: Path, target_dir: Path) -> list[Path]:
     """저장 파일(DATA_FILES, 4개)을 target_dir 로 복사(shutil.copy2)하고 복사된 경로를 돌려준다 (D43, D44). 실패는 StorageError."""
     try:
+        # 기존 백업 폴더는 덮어쓰지 않는다. 이름 충돌 해소는 서비스가 맡는다.
         target_dir.mkdir(parents=True, exist_ok=False)
         copied: list[Path] = []
         for name in DATA_FILES:
@@ -342,6 +389,7 @@ def ensure_initialized(data_dir: Path) -> bool:
 
     category_store = JsonlStore(data_dir / CATEGORIES_FILE)
     if not any(True for _ in category_store.iter_records()):
+        # 기존 분류가 하나라도 있으면 사용자 목록을 그대로 사용한다.
         for name in DEFAULT_CATEGORIES:
             category_store.append(Category(name).to_dict())
     return created
