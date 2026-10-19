@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-"""짧은 명령과 질문을 기존 CLI로 연결하는 간편 모드(D45~D47).
+"""짧은 명령과 질문을 기존 CLI로 연결하는 간편 모드(D45~D48).
 
 실제 거래 검증과 저장은 기존 서비스에 맡긴다. 이 모듈은 입력을 쉽게 바꾸고
 명령 하나의 오류 때문에 전체 대화가 끝나지 않도록 실행 흐름을 조정한다.
 """
 
 import argparse
+import re
 import shlex
 import sys
 from datetime import date
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from . import cli
 from .decorators import handle_errors
@@ -34,6 +35,7 @@ HELP = """간편 가계부 — 할 일만 입력하고 질문에 답하세요.
 복구 예: 복구 또는 복구 TX-000002
 자세한 안내: help add 또는 add --help
 옵션도 사용 가능: list --limit 3
+전체 명령도 가능: python -m budget_app list --limit 3 (같은 기능을 한 번 실행)
 Ctrl+C: 현재 작업 취소 / 도움말: help 또는 도움말 / 종료: exit 또는 종료"""
 
 DELETE_HELP = """거래 삭제 — list에 표시된 거래 번호를 입력하세요.
@@ -139,6 +141,23 @@ def nonempty(value: str) -> str:
     return value.strip()
 
 
+def normalize_invocation(words: list[str]) -> list[str]:
+    """전체 실행 문장의 접두사만 한 번 제거해 기존 명령 처리에 합류시킨다(D48)."""
+    # 경로는 실행하지 않고 이름만 확인한다. Windows·POSIX 구분자 모두 읽을 수 있다.
+    interpreter = PureWindowsPath(words[0]).name.casefold() if words else ""
+    if re.fullmatch(r"python(?:3(?:\.\d+)?)?(?:\.exe)?", interpreter) is None:
+        return words
+    if len(words) >= 3 and words[1] == "-m" and words[2] in ("budget_app", "budget_app.easy"):
+        return words[3:]
+    if len(words) >= 2 and words[1] in ("budget.py", "./budget.py", ".\\budget.py"):
+        return words[2:]
+    raise ValidationError(
+        "가계부 실행 명령을 확인하세요.",
+        hint="예: python -m budget_app list --limit 3 또는 list --limit 3",
+        exit_code=EXIT_USAGE,
+    )
+
+
 def complete_command(words: list[str], prompts: Prompts) -> list[str]:
     """옵션 없는 짧은 명령에 필요한 값만 질문해 기존 명령으로 바꾼다."""
     if len(words) == 1 and words[0] in GROUPS:
@@ -178,6 +197,8 @@ def complete_command(words: list[str], prompts: Prompts) -> list[str]:
 @handle_errors
 def execute(words: list[str], options: argparse.Namespace, prompts: Prompts) -> int:
     """질문과 기존 파서·검증·서비스·핸들러를 연결한다. 파일을 직접 다루지 않는다."""
+    # 접두사만 정리하고 아래 공통 경로로 한 번 실행한다. 다른 Python을 띄우지 않는다.
+    words = normalize_invocation(words) or ["--help"]
     # 도움말은 질문이나 저장 폴더 초기화보다 먼저 처리한다.
     if words[0] in ("help", "도움말"):
         words = [*words[1:], "--help"] if len(words) > 1 else ["--help"]

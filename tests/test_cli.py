@@ -490,6 +490,138 @@ class EasyModeScenario(CliTestCase):
         self.assertNotIn("Traceback", result.stdout + result.stderr)
         self.assertEqual(build_services(data_dir).transactions.list_recent(20), [])
 
+    def test_full_launch_commands_and_short_list_show_the_same_limited_rows(self) -> None:
+        """터미널용 실행 문장을 붙여도 짧은 조회와 같은 세 건만 출력하고 저장 파일을 바꾸지 않는다."""
+        data_dir = self.tmp / "ledger"
+        code, _, err = self.run_cli(data_dir, "import", "--from", str(SAMPLE))
+        self.assertEqual((code, err), (0, ""))
+        before = {path.name: path.read_bytes() for path in data_dir.glob("*.jsonl")}
+        commands = [
+            "list --limit 3",
+            "python -m budget_app list --limit 3",
+            "python3.12 -m budget_app list --limit 3",
+            "python budget.py list --limit 3",
+            "python3 -m budget_app.easy list --limit 3",
+            f'"{sys.executable}" ./budget.py list --limit 3',
+            "python3.12.exe -m budget_app list --limit 3",
+        ]
+        result = self.run_easy(data_dir, input_text="\n".join([*commands, "exit", ""]))
+        self.assertEqual((result.returncode, result.stderr), (0, ""), result.stdout)
+        # 각 입력의 출력 구간을 따로 확인해 일부 명령의 중복 실행도 찾아낸다.
+        outputs = result.stdout.split("가계부> ")[1:-1]
+        self.assertEqual(len(outputs), len(commands), result.stdout)
+        expected_ids = [tx.id for tx in build_services(data_dir).transactions.list_recent(3)]
+        for command, output in zip(commands, outputs):
+            with self.subTest(command=command):
+                ids = [line.split("|", 1)[0].strip() for line in output.splitlines() if line.startswith("TX-")]
+                self.assertEqual(ids, expected_ids)
+        self.assertEqual({path.name: path.read_bytes() for path in data_dir.glob("*.jsonl")}, before)
+
+    def test_full_launch_mutations_execute_once_without_duplicate_transactions(self) -> None:
+        """긴 추가·가져오기·수정·분류·삭제·복구 명령을 한 세션에서 각각 한 번만 처리한다."""
+        data_dir = self.tmp / "ledger"
+        source_csv = self.tmp / "가져올 예시.csv"
+        source_csv.write_bytes(SAMPLE.read_bytes())
+        result = self.run_easy(
+            data_dir,
+            input_text="\n".join([
+                "python -m budget_app add", "2024-01-10", "1", "food", "1000", "python -m budget_app", "meal",
+                f'python3.12 budget.py import --from "{source_csv}"',
+                "python -m budget_app update --id TX-000001 --amount 2000",
+                "python -m budget_app.easy category add cafe",
+                "python -m budget_app delete --id tx-000002",
+                "python budget.py 복구 tx-000002",
+                'python -m budget_app search --q "python -m budget_app"', "list", "exit", "",
+            ]),
+            module=True,
+        )
+        self.assertEqual((result.returncode, result.stderr), (0, ""), result.stdout)
+        for message in (
+            "[저장 완료] id=TX-000001", "[완료] imported=5, skipped=1",
+            "[수정 완료] id=TX-000001", "[저장 완료] category=cafe",
+            "[삭제 완료] id=TX-000002", "[복구 완료] id=TX-000002",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(result.stdout.count(message), 1, result.stdout)
+        svc = build_services(data_dir)
+        rows = svc.transactions.list_recent(20)
+        self.assertEqual(len(rows), 6)
+        self.assertEqual({tx.id for tx in rows}, {f"TX-{number:06d}" for number in range(1, 7)})
+        added = next(tx for tx in rows if tx.id == "TX-000001")
+        self.assertEqual((added.amount, added.memo, added.tags), (2000, "python -m budget_app", ["meal"]))
+        # 실행 문장이 메모나 검색값에 들어 있으면 일반 데이터로 그대로 유지한다.
+        self.assertEqual(result.stdout.count("| python -m budget_app"), 2)
+        self.assertEqual(svc.categories.list_names().count("cafe"), 1)
+        self.assertEqual(len((data_dir / "backups" / "deleted.jsonl").read_text(encoding="utf-8").splitlines()), 1)
+
+    def test_full_launch_data_dir_override_applies_to_only_one_command(self) -> None:
+        """실행 문장의 저장 폴더는 해당 작업에만 적용하고 다음 짧은 명령은 세션 폴더를 사용한다."""
+        data_dir = self.tmp / "기본 가계부"
+        alternate = self.tmp / "다른 가계부"
+        for directory, memo in ((data_dir, "기본 내역"), (alternate, "다른 내역")):
+            build_services(directory).transactions.add(
+                date="2024-01-10", type_="expense", category="food", amount="1000", memo=memo, tags="",
+            )
+        before = {path.name: path.read_bytes() for path in data_dir.glob("*.jsonl")}
+        result = self.run_easy(
+            data_dir,
+            input_text="\n".join([
+                "python -m budget_app list",
+                f'python -m budget_app --data-dir "{alternate}" list',
+                f'python budget.py --data-dir "{alternate}" add',
+                "2024-01-11", "1", "food", "2000", "다른 폴더에 추가", "",
+                "list", "exit", "",
+            ]),
+        )
+        self.assertEqual((result.returncode, result.stderr), (0, ""), result.stdout)
+        self.assertEqual(result.stdout.count("| 기본 내역"), 2)
+        self.assertEqual(result.stdout.count("| 다른 내역"), 1)
+        self.assertNotIn("| 다른 폴더에 추가", result.stdout)
+        self.assertEqual({path.name: path.read_bytes() for path in data_dir.glob("*.jsonl")}, before)
+        other_rows = build_services(alternate).transactions.list_recent(20)
+        self.assertEqual({tx.memo for tx in other_rows}, {"다른 내역", "다른 폴더에 추가"})
+
+    def test_full_launch_help_and_unsupported_python_commands_preserve_data(self) -> None:
+        """실행 부분만 입력하면 도움말을 보여주고 다른 Python 실행·연결 문장·중첩 실행은 거부한다."""
+        help_dir = self.tmp / "도움말은 미생성"
+        result = self.run_easy(
+            help_dir,
+            input_text="\n".join([
+                "python -m budget_app", "python budget.py", "python3 -m budget_app.easy",
+                "python -m budget_app --help", "python budget.py list --help", "exit", "",
+            ]),
+        )
+        self.assertEqual((result.returncode, result.stderr), (0, ""), result.stdout)
+        self.assertIn("list", result.stdout)
+        self.assertFalse(help_dir.exists())
+
+        data_dir = self.tmp / "ledger"
+        self.run_cli(data_dir, "import", "--from", str(SAMPLE))
+        before = {path.name: path.read_bytes() for path in data_dir.glob("*.jsonl")}
+        marker = self.tmp / "python_must_not_run.txt"
+        unsupported = [
+            f'python -c "open(\'{marker}\', \'w\').write(\'실행됨\')"',
+            "python -m this", "python other.py", "python -u -m budget_app list",
+            "python -m budget_app python -m budget_app list",
+            "python -m budget_app list --limit 1 && python -m budget_app delete --id TX-000001",
+            "python -m budget_app list --limit 1 ; python -m budget_app delete --id TX-000001",
+        ]
+        result = self.run_easy(data_dir, input_text="\n".join([*unsupported, "list --limit 1", "exit", ""]))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(result.stderr)
+        self.assertEqual(result.stdout.count("[안내] 작업을 마치지 못했습니다."), len(unsupported), result.stdout)
+        outputs = result.stdout.split("가계부> ")[1:-1]
+        self.assertEqual(len(outputs), len(unsupported) + 1, result.stdout)
+        for command, output in zip(unsupported, outputs):
+            with self.subTest(command=command):
+                self.assertFalse(any(line.startswith("TX-") for line in output.splitlines()), output)
+        self.assertTrue(any(line.startswith("TX-") for line in outputs[-1].splitlines()), result.stdout)
+        self.assertNotIn("Traceback", result.stdout + result.stderr)
+        self.assertNotIn("[삭제 완료]", result.stdout)
+        self.assertFalse(marker.exists())
+        self.assertFalse((data_dir / "backups").exists())
+        self.assertEqual({path.name: path.read_bytes() for path in data_dir.glob("*.jsonl")}, before)
+
     def test_eof_at_command_prompt_is_success_and_during_input_is_interruption(self) -> None:
         """명령 대기 EOF는 0, 거래 입력 중 EOF는 두 진입점 모두 130이며 미완성 거래를 저장하지 않는다."""
         for module in (False, True):
